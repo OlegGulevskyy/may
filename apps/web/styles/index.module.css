@@ -1,0 +1,19 @@
+.container {
+  text-align: center;
+}
+
+.button {
+  max-width: 200px;
+  border: 0;
+  border-radius: 10px;
+  padding: 14px 30px;
+  background: #2f80ed;
+  color: white;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:focus-visible {
+  outline: 3px solid #99c4ff;
+  outline-offset: 2px;
+}

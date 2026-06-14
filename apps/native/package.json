@@ -1,0 +1,37 @@
+{
+  "name": "native",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "dev": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "eject": "expo eject"
+  },
+  "dependencies": {
+    "@repo/ui": "workspace:*",
+    "expo": "^56.0.11",
+    "expo-constants": "~56.0.18",
+    "expo-linking": "~56.0.14",
+    "expo-router": "~56.2.10",
+    "expo-status-bar": "~56.0.4",
+    "expo-system-ui": "~56.0.5",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.25.2"
+  },
+  "devDependencies": {
+    "@react-native/metro-config": "0.85.3",
+    "@types/react": "~19.2.10",
+    "typescript": "6.0.3"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "listUnknownPackages": false
+      }
+    }
+  }
+}
