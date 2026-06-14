@@ -1,7 +1,22 @@
-import { Stack } from "expo-router"
+import { Stack } from "expo-router";
+import { useEffect } from "react";
+import * as SystemUI from "expo-system-ui";
 
 const AppLayout = () => {
-  return <Stack />
-}
+  useEffect(() => {
+    SystemUI.setBackgroundColorAsync("#f7efe7");
+  }, []);
 
-export default AppLayout
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: {
+          backgroundColor: "#f7efe7",
+        },
+      }}
+    />
+  );
+};
+
+export default AppLayout;

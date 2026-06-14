@@ -4,7 +4,13 @@
   "tasks": {
     "build": {
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**", "!.next/dev/**"],
+      "outputs": [
+        "dist/**",
+        "lib/**",
+        ".next/**",
+        "!.next/cache/**",
+        "!.next/dev/**"
+      ],
       "dependsOn": ["^build"]
     },
     "dev": {
