@@ -1,10 +1,9 @@
-export type MemoryAuthorId = "dad" | "mom";
-
-export type MemoryAuthor = {
-  id: MemoryAuthorId;
-  name: string;
-  initials: string;
-};
+/**
+ * The id of a {@link FamilyMember} (see `./family`). Posts, comments, and
+ * reactions are all attributed to a member by id so the wall can stay in sync
+ * with whoever has actually joined a given family.
+ */
+export type MemoryAuthorId = string;
 
 export type MemoryMediaKind = "image" | "video" | "audio";
 
@@ -56,19 +55,6 @@ export type NewMemoryPostInput = {
   authorId: MemoryAuthorId;
   body: string;
   media: MemoryMedia[];
-};
-
-export const MEMORY_AUTHORS: Record<MemoryAuthorId, MemoryAuthor> = {
-  dad: {
-    id: "dad",
-    name: "Oleg",
-    initials: "O",
-  },
-  mom: {
-    id: "mom",
-    name: "Mom",
-    initials: "M",
-  },
 };
 
 export const DELIVERY_LABELS: Record<MemoryDeliveryStatus, string> = {

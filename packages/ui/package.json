@@ -1,5 +1,5 @@
 {
-  "name": "@repo/ui",
+  "name": "@may/ui",
   "version": "0.0.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,7 +13,7 @@
     "react-native": "0.85.3"
   },
   "devDependencies": {
-    "@repo/typescript-config": "workspace:*",
+    "@may/typescript-config": "workspace:*",
     "@types/react": "~19.2.10",
     "tsup": "^8.0.1",
     "typescript": "6.0.3"

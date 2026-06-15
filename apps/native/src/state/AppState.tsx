@@ -1,0 +1,371 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+
+import {
+  createInvite,
+  resolveMember,
+  type Family,
+  type FamilyInvite,
+  type FamilyMember,
+  type LocalProfile,
+} from "@may/core";
+
+import {
+  createRemoteInvite,
+  createRemoteProfileAndFamily,
+  joinRemoteFamilyWithCode,
+  loadRemoteSessionForCurrentUser,
+  subscribeToRemoteFamily,
+} from "../services/familyBackend";
+import {
+  signInWithGoogle as signInWithGoogleRemote,
+  signOutCurrentUser,
+  subscribeToAuthUser,
+  type AuthUser,
+} from "../services/authBackend";
+import {
+  getLocalString,
+  removeLocalItem,
+  setLocalString,
+} from "../services/storage";
+
+const PROFILE_KEY = "may.profile.v1";
+const FAMILY_KEY = "may.family.v1";
+const ACTIVE_MEMBER_KEY = "may.active-member.v1";
+export const wallStorageKey = (familyId: string) =>
+  `may.memory-wall.${familyId}.v1`;
+
+type CreateFamilyInput = {
+  yourName: string;
+  childName: string;
+  childEmail: string;
+};
+
+type AuthStatus = "loading" | "signed-out" | "signed-in";
+
+type AppStateValue = {
+  authStatus: AuthStatus;
+  authUser: AuthUser | null;
+  hydrated: boolean;
+  isRestoringSession: boolean;
+  profile: LocalProfile | null;
+  family: Family | null;
+  /** The member currently composing/reacting on this device. */
+  activeMemberId: string | null;
+  activeMember: FamilyMember | null;
+  isReady: boolean;
+  syncError: string | null;
+  signInWithGoogle: () => Promise<void>;
+  signOut: () => Promise<void>;
+  createProfileAndFamily: (input: CreateFamilyInput) => Promise<void>;
+  addInvite: (label: string) => Promise<FamilyInvite>;
+  joinWithCode: (input: { yourName: string; code: string }) => Promise<boolean>;
+  setActiveMemberId: (memberId: string) => void;
+  reset: () => void;
+};
+
+const AppStateContext = createContext<AppStateValue | null>(null);
+
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : "Something went wrong.";
+
+export function AppStateProvider({ children }: { children: ReactNode }) {
+  const [hydrated, setHydrated] = useState(false);
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState(false);
+  const [profile, setProfile] = useState<LocalProfile | null>(null);
+  const [family, setFamily] = useState<Family | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [activeMemberId, setActiveMemberIdState] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    try {
+      const storedProfile = getLocalString(PROFILE_KEY);
+      const storedFamily = getLocalString(FAMILY_KEY);
+      const storedActive = getLocalString(ACTIVE_MEMBER_KEY);
+      if (storedProfile) {
+        setProfile(JSON.parse(storedProfile) as LocalProfile);
+      }
+      if (storedFamily) {
+        setFamily(JSON.parse(storedFamily) as Family);
+      }
+      if (storedActive) {
+        setActiveMemberIdState(storedActive);
+      }
+      setHydrated(true);
+    } catch {
+      setHydrated(true);
+    }
+  }, []);
+
+  useEffect(
+    () =>
+      subscribeToAuthUser({
+        onError: setSyncError,
+        onUser: (user) => {
+          if (!user) {
+            setAuthUser(null);
+            setAuthStatus("signed-out");
+            setIsRestoringSession(false);
+            setProfile(null);
+            setFamily(null);
+            setActiveMemberIdState(null);
+            return;
+          }
+
+          setAuthUser(user);
+          setAuthStatus("signed-in");
+          setIsRestoringSession(true);
+          loadRemoteSessionForCurrentUser()
+            .then((remoteSession) => {
+              if (!remoteSession) {
+                setProfile(null);
+                setFamily(null);
+                setActiveMemberIdState(null);
+                return;
+              }
+
+              setSyncError(null);
+              setProfile(remoteSession.profile);
+              setFamily(remoteSession.family);
+              setActiveMemberIdState(remoteSession.activeMemberId);
+            })
+            .catch((error) => setSyncError(getErrorMessage(error)))
+            .finally(() => setIsRestoringSession(false));
+        },
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    if (profile) {
+      setLocalString(PROFILE_KEY, JSON.stringify(profile));
+    } else {
+      removeLocalItem(PROFILE_KEY);
+    }
+  }, [hydrated, profile]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    if (family) {
+      setLocalString(FAMILY_KEY, JSON.stringify(family));
+    } else {
+      removeLocalItem(FAMILY_KEY);
+    }
+  }, [hydrated, family]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    if (activeMemberId) {
+      setLocalString(ACTIVE_MEMBER_KEY, activeMemberId);
+    } else {
+      removeLocalItem(ACTIVE_MEMBER_KEY);
+    }
+  }, [hydrated, activeMemberId]);
+
+  useEffect(() => {
+    if (!hydrated || !family || !activeMemberId) {
+      return;
+    }
+
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    subscribeToRemoteFamily({
+      familyId: family.id,
+      onError: setSyncError,
+      onFamily: (remoteFamily) => {
+        setSyncError(null);
+        setFamily(remoteFamily);
+      },
+    })
+      .then((nextUnsubscribe) => {
+        if (cancelled) {
+          nextUnsubscribe();
+          return;
+        }
+        unsubscribe = nextUnsubscribe;
+      })
+      .catch((error) => setSyncError(getErrorMessage(error)));
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [activeMemberId, family?.id, hydrated]);
+
+  const createProfileAndFamily = useCallback(
+    async ({ yourName, childName, childEmail }: CreateFamilyInput) => {
+      const remoteSession = await createRemoteProfileAndFamily({
+        yourName,
+        childName,
+        childEmail,
+      });
+
+      if (remoteSession) {
+        setSyncError(null);
+        setProfile(remoteSession.profile);
+        setFamily(remoteSession.family);
+        setActiveMemberIdState(remoteSession.activeMemberId);
+        return;
+      }
+    },
+    [],
+  );
+
+  const addInvite = useCallback(
+    async (label: string) => {
+      if (!family || !profile) {
+        throw new Error("Cannot create an invite before a family exists.");
+      }
+      const invite = createInvite({ label, createdBy: profile.id });
+      const nextFamily = { ...family, invites: [...family.invites, invite] };
+      const wroteRemote = await createRemoteInvite({ family, invite });
+
+      if (!wroteRemote) {
+        throw new Error("Firebase is not configured.");
+      } else {
+        setSyncError(null);
+      }
+
+      setFamily(nextFamily);
+      return invite;
+    },
+    [family, profile],
+  );
+
+  const joinWithCode = useCallback(
+    async ({ yourName, code }: { yourName: string; code: string }) => {
+      const remoteSession = await joinRemoteFamilyWithCode({ yourName, code });
+      if (remoteSession) {
+        setSyncError(null);
+        setFamily(remoteSession.family);
+        setProfile(remoteSession.profile);
+        setActiveMemberIdState(remoteSession.activeMemberId);
+        return true;
+      }
+
+      return false;
+    },
+    [],
+  );
+
+  const signInWithGoogle = useCallback(async () => {
+    await signInWithGoogleRemote();
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await signOutCurrentUser();
+    setAuthUser(null);
+    setAuthStatus("signed-out");
+    setProfile(null);
+    setFamily(null);
+    setActiveMemberIdState(null);
+  }, []);
+
+  const setActiveMemberId = useCallback((memberId: string) => {
+    setActiveMemberIdState(memberId);
+  }, []);
+
+  const reset = useCallback(() => {
+    if (family) {
+      removeLocalItem(wallStorageKey(family.id));
+    }
+    setProfile(null);
+    setFamily(null);
+    setActiveMemberIdState(null);
+    setSyncError(null);
+  }, [family]);
+
+  const activeMember = useMemo(() => {
+    if (!family || !activeMemberId) {
+      return null;
+    }
+    return (
+      family.members.find((member) => member.id === activeMemberId) ?? null
+    );
+  }, [family, activeMemberId]);
+
+  const value = useMemo<AppStateValue>(
+    () => ({
+      authStatus,
+      authUser,
+      hydrated,
+      isRestoringSession,
+      profile,
+      family,
+      activeMemberId,
+      activeMember,
+      isReady: authStatus === "signed-in" && Boolean(family && activeMemberId),
+      syncError,
+      signInWithGoogle,
+      signOut,
+      createProfileAndFamily,
+      addInvite,
+      joinWithCode,
+      setActiveMemberId,
+      reset,
+    }),
+    [
+      authStatus,
+      authUser,
+      hydrated,
+      isRestoringSession,
+      profile,
+      family,
+      activeMemberId,
+      activeMember,
+      syncError,
+      signInWithGoogle,
+      signOut,
+      createProfileAndFamily,
+      addInvite,
+      joinWithCode,
+      setActiveMemberId,
+      reset,
+    ],
+  );
+
+  return (
+    <AppStateContext.Provider value={value}>
+      {children}
+    </AppStateContext.Provider>
+  );
+}
+
+export function useAppState() {
+  const value = useContext(AppStateContext);
+  if (!value) {
+    throw new Error("useAppState must be used within an AppStateProvider.");
+  }
+  return value;
+}
+
+/** Convenience: resolve any member id to a display name + initials. */
+export function useMemberResolver() {
+  const { family } = useAppState();
+  return useCallback(
+    (memberId: string) =>
+      family
+        ? resolveMember(family, memberId)
+        : { displayName: "Someone", initials: "?" },
+    [family],
+  );
+}

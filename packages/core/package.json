@@ -1,5 +1,5 @@
 {
-  "name": "@repo/core",
+  "name": "@may/core",
   "version": "0.0.0",
   "private": true,
   "main": "./dist/index.js",
@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "devDependencies": {
-    "@repo/typescript-config": "workspace:*",
+    "@may/typescript-config": "workspace:*",
     "tsup": "^8.0.1",
     "typescript": "6.0.3"
   }

@@ -11,19 +11,19 @@ import { logger } from "firebase-functions";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { onTaskDispatched } from "firebase-functions/v2/tasks";
 import { onDocumentWritten } from "firebase-functions/v2/firestore";
-import { defineString } from "firebase-functions/params";
+import { defineSecret, defineString } from "firebase-functions/params";
 import { google } from "googleapis";
 import sharp from "sharp";
 
-import { isPostReadyForDelivery, type MemoryPost } from "@repo/core";
+import { isPostReadyForDelivery, type MemoryPost } from "@may/core";
 
 initializeApp();
 
 const babyGmailAddress = defineString("BABY_GMAIL_ADDRESS");
 const driveFolderId = defineString("GOOGLE_DRIVE_FOLDER_ID");
 const googleClientId = defineString("GOOGLE_OAUTH_CLIENT_ID");
-const googleClientSecret = defineString("GOOGLE_OAUTH_CLIENT_SECRET");
-const googleRefreshToken = defineString("GOOGLE_OAUTH_REFRESH_TOKEN");
+const googleClientSecret = defineSecret("GOOGLE_OAUTH_CLIENT_SECRET");
+const googleRefreshToken = defineSecret("GOOGLE_OAUTH_REFRESH_TOKEN");
 
 const db = getFirestore();
 const functionRegion = "europe-west1";
@@ -163,6 +163,7 @@ export const deliverMemoryEmail = onTaskDispatched(
       maxConcurrentDispatches: 2,
     },
     region: functionRegion,
+    secrets: [googleClientSecret, googleRefreshToken],
   },
   async (req) => {
     const { familyId, postId } = req.data as {

@@ -11,6 +11,27 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
     }
 
+    match /inviteCodes/{code} {
+      allow create: if signedIn()
+        && request.resource.data.code == code
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.status == "pending";
+      allow get: if signedIn() && resource.data.status == "pending";
+      allow list: if false;
+      allow update: if signedIn()
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.familyId == resource.data.familyId
+        && resource.data.status == "pending"
+        && request.resource.data.status == "accepted"
+        && request.resource.data.acceptedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /users/{userId} {
+      allow read, create, update: if signedIn() && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
     match /families/{familyId} {
       allow create: if signedIn();
       allow read: if familyMember(familyId);
@@ -19,6 +40,24 @@ service cloud.firestore {
       match /members/{memberId} {
         allow read: if familyMember(familyId);
         allow create, update: if signedIn() && request.auth.uid == memberId;
+        allow delete: if false;
+      }
+
+      match /invites/{inviteCode} {
+        allow read: if familyMember(familyId);
+        allow create: if familyMember(familyId)
+          && request.resource.data.code == inviteCode
+          && request.resource.data.status == "pending";
+        allow update: if familyMember(familyId)
+          || (
+            signedIn()
+            && request.resource.data.code == resource.data.code
+            && request.resource.data.familyId == resource.data.familyId
+            && resource.data.code == inviteCode
+            && resource.data.status == "pending"
+            && request.resource.data.status == "accepted"
+            && request.resource.data.acceptedBy == request.auth.uid
+          );
         allow delete: if false;
       }
 

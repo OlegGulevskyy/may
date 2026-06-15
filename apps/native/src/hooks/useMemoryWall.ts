@@ -1,22 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import NetInfo from "@react-native-community/netinfo";
 
 import {
   createId,
   createMemoryPost,
-  type MemoryAuthorId,
   type MemoryComment,
   type MemoryDeliveryStatus,
   type MemoryMedia,
   type MemoryPost,
-} from "@repo/core";
+} from "@may/core";
 
-import { demoMemories } from "../data/demoMemories";
-
-const STORAGE_KEY = "may.memory-wall.v1";
-const ACTIVE_AUTHOR_KEY = "may.active-author.v1";
-const FAMILY_ID = "family-demo";
+import { buildSampleMemories } from "../data/demoMemories";
+import { getLocalString, setLocalString } from "../services/storage";
+import { wallStorageKey } from "../state/AppState";
 
 const syncStages: Array<{ status: MemoryDeliveryStatus; delayMs: number }> = [
   { status: "queued", delayMs: 80 },
@@ -31,43 +27,43 @@ type SendMemoryInput = {
   media: MemoryMedia[];
 };
 
-export const useMemoryWall = () => {
+/**
+ * Family-scoped memory wall. Posts persist locally per family and walk through
+ * a simulated delivery pipeline when online. A new family starts empty — sample
+ * content is only added on explicit request via {@link seedSampleMemories}.
+ */
+export const useMemoryWall = (familyId: string, activeMemberId: string) => {
+  const storageKey = wallStorageKey(familyId);
   const [posts, setPosts] = useState<MemoryPost[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [networkOnline, setNetworkOnline] = useState(true);
   const [forcedOffline, setForcedOffline] = useState(false);
-  const [activeAuthorId, setActiveAuthorIdState] =
-    useState<MemoryAuthorId>("dad");
   const syncingPostIds = useRef(new Set<string>());
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const isOnline = networkOnline && !forcedOffline;
 
   useEffect(() => {
-    const hydrate = async () => {
-      const [storedPosts, storedAuthor] = await Promise.all([
-        AsyncStorage.getItem(STORAGE_KEY),
-        AsyncStorage.getItem(ACTIVE_AUTHOR_KEY),
-      ]);
+    let cancelled = false;
+    setHydrated(false);
 
-      if (storedPosts) {
-        setPosts(JSON.parse(storedPosts) as MemoryPost[]);
-      } else {
-        setPosts(demoMemories);
+    try {
+      const stored = getLocalString(storageKey);
+      if (!cancelled) {
+        setPosts(stored ? (JSON.parse(stored) as MemoryPost[]) : []);
+        setHydrated(true);
       }
-
-      if (storedAuthor === "dad" || storedAuthor === "mom") {
-        setActiveAuthorIdState(storedAuthor);
+    } catch {
+      if (!cancelled) {
+        setPosts([]);
+        setHydrated(true);
       }
+    }
 
-      setHydrated(true);
+    return () => {
+      cancelled = true;
     };
-
-    hydrate().catch(() => {
-      setPosts(demoMemories);
-      setHydrated(true);
-    });
-  }, []);
+  }, [storageKey]);
 
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
@@ -83,17 +79,8 @@ export const useMemoryWall = () => {
     if (!hydrated) {
       return;
     }
-
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(posts)).catch(
-      () => undefined,
-    );
-  }, [hydrated, posts]);
-
-  useEffect(() => {
-    AsyncStorage.setItem(ACTIVE_AUTHOR_KEY, activeAuthorId).catch(
-      () => undefined,
-    );
-  }, [activeAuthorId]);
+    setLocalString(storageKey, JSON.stringify(posts));
+  }, [hydrated, posts, storageKey]);
 
   useEffect(
     () => () => {
@@ -156,8 +143,8 @@ export const useMemoryWall = () => {
     ({ body, media }: SendMemoryInput) => {
       const post = {
         ...createMemoryPost({
-          familyId: FAMILY_ID,
-          authorId: activeAuthorId,
+          familyId,
+          authorId: activeMemberId,
           body,
           media,
         }),
@@ -170,14 +157,14 @@ export const useMemoryWall = () => {
         runDemoSync(post.id);
       }
     },
-    [activeAuthorId, isOnline, runDemoSync],
+    [activeMemberId, familyId, isOnline, runDemoSync],
   );
 
   const addComment = useCallback(
     (postId: string, body: string) => {
       const comment: MemoryComment = {
         id: createId("comment"),
-        authorId: activeAuthorId,
+        authorId: activeMemberId,
         body,
         createdAt: new Date().toISOString(),
       };
@@ -188,16 +175,16 @@ export const useMemoryWall = () => {
         updatedAt: new Date().toISOString(),
       }));
     },
-    [activeAuthorId, updatePost],
+    [activeMemberId, updatePost],
   );
 
   const toggleReaction = useCallback(
     (postId: string, reaction: string) => {
       updatePost(postId, (post) => {
         const current = post.reactions[reaction] ?? [];
-        const next = current.includes(activeAuthorId)
-          ? current.filter((authorId) => authorId !== activeAuthorId)
-          : [...current, activeAuthorId];
+        const next = current.includes(activeMemberId)
+          ? current.filter((memberId) => memberId !== activeMemberId)
+          : [...current, activeMemberId];
 
         return {
           ...post,
@@ -209,7 +196,7 @@ export const useMemoryWall = () => {
         };
       });
     },
-    [activeAuthorId, updatePost],
+    [activeMemberId, updatePost],
   );
 
   const retryPost = useCallback(
@@ -226,13 +213,23 @@ export const useMemoryWall = () => {
     [runDemoSync, updatePost],
   );
 
+  const seedSampleMemories = useCallback(
+    (partnerId?: string) => {
+      setPosts((current) =>
+        current.length > 0
+          ? current
+          : buildSampleMemories({
+              familyId,
+              authorId: activeMemberId,
+              partnerId,
+            }),
+      );
+    },
+    [activeMemberId, familyId],
+  );
+
   const clearLocalData = useCallback(() => {
     setPosts([]);
-    AsyncStorage.removeItem(STORAGE_KEY).catch(() => undefined);
-  }, []);
-
-  const setActiveAuthorId = useCallback((authorId: MemoryAuthorId) => {
-    setActiveAuthorIdState(authorId);
   }, []);
 
   const sortedPosts = useMemo(
@@ -245,7 +242,6 @@ export const useMemoryWall = () => {
   );
 
   return {
-    activeAuthorId,
     addComment,
     clearLocalData,
     forcedOffline,
@@ -253,8 +249,8 @@ export const useMemoryWall = () => {
     isOnline,
     posts: sortedPosts,
     retryPost,
+    seedSampleMemories,
     sendMemory,
-    setActiveAuthorId,
     toggleForcedOffline: () => setForcedOffline((current) => !current),
     toggleReaction,
   };

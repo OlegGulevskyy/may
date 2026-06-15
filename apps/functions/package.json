@@ -6,21 +6,21 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf lib",
-    "deploy": "firebase deploy --only functions",
-    "dev": "firebase emulators:start --only functions,firestore,storage"
+    "deploy": "pnpm dlx firebase-tools deploy --only functions",
+    "dev": "JAVA_HOME=$(/usr/libexec/java_home -v 21); PATH=\"$JAVA_HOME/bin:$PATH\" pnpm dlx firebase-tools emulators:start --only functions,firestore,storage"
   },
   "engines": {
     "node": "20"
   },
   "dependencies": {
-    "@repo/core": "workspace:*",
+    "@may/core": "workspace:*",
     "firebase-admin": "^14.0.0",
     "firebase-functions": "^7.2.5",
     "googleapis": "^173.0.0",
     "sharp": "^0.35.1"
   },
   "devDependencies": {
-    "@repo/typescript-config": "workspace:*",
+    "@may/typescript-config": "workspace:*",
     "@types/node": "^20.19.43",
     "typescript": "6.0.3"
   }

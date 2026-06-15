@@ -1,7 +1,7 @@
 import * as FileSystem from "expo-file-system/legacy";
 import type { ImagePickerAsset } from "expo-image-picker";
 
-import { createId, type MemoryMedia, type MemoryMediaKind } from "@repo/core";
+import { createId, type MemoryMedia, type MemoryMediaKind } from "@may/core";
 
 const mediaDirectory = `${FileSystem.documentDirectory}may-media/`;
 

@@ -1,5 +1,5 @@
 {
-  "extends": "@repo/typescript-config/base.json",
+  "extends": "@may/typescript-config/base.json",
   "compilerOptions": {
     "lib": ["ES2023"],
     "ignoreDeprecations": "6.0",
