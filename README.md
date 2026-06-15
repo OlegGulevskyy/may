@@ -66,17 +66,36 @@ For a fully cloud-built development app with no generated native folders on
 your machine, use EAS Build with the same public Google env vars configured in
 EAS.
 
-6. Copy `apps/functions/.env.example` to `apps/functions/.env.local` and fill
-   the non-sensitive Gmail/Drive target values.
-7. Store sensitive OAuth values in Firebase Secret Manager:
+6. Copy `apps/functions/.env.example` to `apps/functions/.env.local` and set
+   the backend web OAuth client id:
+
+```sh
+GOOGLE_OAUTH_CLIENT_ID=your-web-oauth-client-id.apps.googleusercontent.com
+```
+
+Use the same web OAuth client id as `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`; the
+client secret must stay server-side.
+
+7. Store the web OAuth client secret in Firebase Secret Manager:
 
 ```sh
 firebase functions:secrets:set GOOGLE_OAUTH_CLIENT_SECRET
-firebase functions:secrets:set GOOGLE_OAUTH_REFRESH_TOKEN
 ```
 
-For local function emulator testing, put those same two values in
+For local function emulator testing, put the same value in
 `apps/functions/.secret.local`.
+
+The Settings screen asks parents to grant only
+`https://www.googleapis.com/auth/gmail.send` and
+`https://www.googleapis.com/auth/drive.file`. The app writes a one-time
+Firestore grant request, and a Firestore-triggered function exchanges the
+Google server auth code and stores the refresh token under
+`families/{familyId}/private/googleDelivery`; only sanitized connection
+metadata is mirrored onto the family document for the app UI.
+When a wall post is synced to Firestore, `deliverMemoryPostToGoogle` refreshes
+the Google access token, uploads any media files to the connected Drive account,
+shares those files with the child email, sends the child a Gmail message, and
+marks the post `delivered`.
 
 8. The app uses the signed-in Firebase Auth uid as the family member id and
    stores the active family on `users/{uid}`.
@@ -86,8 +105,8 @@ For local function emulator testing, put those same two values in
 firebase deploy --only firestore:may-default,storage,functions
 ```
 
-The next backend iteration should add Firebase Storage uploads for media,
-thumbnail processing, and the Gmail/Drive delivery consent flow.
+The next backend iteration should add richer email templates and a dedicated
+Drive folder for May uploads.
 
 ### Utilities
 

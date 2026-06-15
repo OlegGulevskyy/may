@@ -571,10 +571,6 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     [activeMemberId, familyId, updatePosts],
   );
 
-  const clearLocalData = useCallback(() => {
-    updatePosts(() => (remoteSyncEnabled ? remotePostsRef.current : []));
-  }, [remoteSyncEnabled, updatePosts]);
-
   const hasMoreKnownPosts =
     totalRemotePostCount === undefined
       ? hasMorePosts
@@ -598,7 +594,6 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
 
   return {
     addComment,
-    clearLocalData,
     forcedOffline,
     hasMorePosts: hasMoreKnownPosts,
     hydrated,

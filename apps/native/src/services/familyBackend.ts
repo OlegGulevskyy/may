@@ -12,10 +12,12 @@ import {
 import {
   createFamily,
   createFamilyMember,
+  GOOGLE_DELIVERY_SCOPES,
   normalizeInviteCode,
   type Family,
   type FamilyInvite,
   type FamilyMember,
+  type GoogleDeliveryConnection,
   type LocalProfile,
 } from "@may/core";
 
@@ -55,7 +57,7 @@ type InviteLookup = {
 
 type RemoteFamilyBase = Pick<
   Family,
-  "id" | "childName" | "childEmail" | "createdAt"
+  "id" | "childName" | "childEmail" | "createdAt" | "deliveryConnection"
 >;
 
 const inviteLookupCollection = "inviteCodes";
@@ -83,6 +85,42 @@ const toLocalProfile = (member: FamilyMember): LocalProfile => ({
   initials: member.initials,
 });
 
+const googleDeliveryScopeSet = new Set<string>(GOOGLE_DELIVERY_SCOPES);
+
+const googleDeliveryConnectionFromValue = (
+  value: unknown,
+): GoogleDeliveryConnection | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const data = value as Record<string, unknown>;
+  const scopes = Array.isArray(data.scopes)
+    ? data.scopes.filter(
+        (scope): scope is GoogleDeliveryConnection["scopes"][number] =>
+          typeof scope === "string" && googleDeliveryScopeSet.has(scope),
+      )
+    : [];
+
+  if (
+    typeof data.googleEmail !== "string" ||
+    typeof data.connectedBy !== "string" ||
+    typeof data.connectedAt !== "string" ||
+    typeof data.updatedAt !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    status: data.status === "needs_reconnect" ? data.status : "connected",
+    googleEmail: data.googleEmail,
+    scopes,
+    connectedBy: data.connectedBy,
+    connectedAt: data.connectedAt,
+    updatedAt: data.updatedAt,
+  };
+};
+
 const familyBaseFromSnapshot = (
   id: string,
   data: Record<string, unknown>,
@@ -94,6 +132,9 @@ const familyBaseFromSnapshot = (
     typeof data.createdAt === "string"
       ? data.createdAt
       : new Date().toISOString(),
+  deliveryConnection: googleDeliveryConnectionFromValue(
+    data.deliveryConnection,
+  ),
 });
 
 const sortByCreatedAt = <T extends { createdAt?: string; joinedAt?: string }>(

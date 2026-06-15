@@ -23,6 +23,24 @@ export type FamilyInvite = {
   acceptedBy?: string;
 };
 
+export const GOOGLE_DELIVERY_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/drive.file",
+] as const;
+
+export type GoogleDeliveryScope = (typeof GOOGLE_DELIVERY_SCOPES)[number];
+
+export type GoogleDeliveryConnectionStatus = "connected" | "needs_reconnect";
+
+export type GoogleDeliveryConnection = {
+  status: GoogleDeliveryConnectionStatus;
+  googleEmail: string;
+  scopes: GoogleDeliveryScope[];
+  connectedBy: string;
+  connectedAt: string;
+  updatedAt: string;
+};
+
 export type Family = {
   id: string;
   childName: string;
@@ -30,6 +48,7 @@ export type Family = {
   childEmail: string;
   members: FamilyMember[];
   invites: FamilyInvite[];
+  deliveryConnection?: GoogleDeliveryConnection;
   createdAt: string;
 };
 

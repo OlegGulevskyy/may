@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Image,
   Modal,
@@ -24,6 +25,14 @@ import {
 } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import {
+  PanGestureHandler,
+  LegacyScrollView as GestureHandlerScrollView,
+  State,
+  type PanGestureHandlerGestureEvent,
+  type PanGestureHandlerStateChangeEvent,
+} from "react-native-gesture-handler";
+import {
+  ArrowUp,
   Film,
   Heart,
   House,
@@ -80,11 +89,19 @@ const maxMediaPeekWidth = 38;
 const wallHorizontalPadding = 18;
 const memoryCardPadding = 16;
 const wallPrefetchTrailingItems = 4;
+const backToFirstPostThreshold = 2;
+const postBodyPreviewLines = 4;
 const wallViewabilityConfig = { itemVisiblePercentThreshold: 20 };
 
 export function Wall() {
   const router = useRouter();
-  const { family, activeMemberId, setActiveMemberId, signOut } = useAppState();
+  const {
+    activeMemberId,
+    connectGoogleDelivery,
+    family,
+    setActiveMemberId,
+    signOut,
+  } = useAppState();
 
   // `Wall` only renders once the app state is ready (see app/index.tsx).
   const fam = family!;
@@ -92,7 +109,6 @@ export function Wall() {
 
   const {
     addComment,
-    clearLocalData,
     drafts,
     forcedOffline,
     hasMorePosts,
@@ -100,13 +116,11 @@ export function Wall() {
     isOnline,
     isLoadingMorePosts,
     loadMorePosts,
-    loadedRemotePostCount,
     posts,
     retryPost,
     seedSampleMemories,
     toggleForcedOffline,
     toggleReaction,
-    totalRemotePostCount,
   } = useMemoryWallContext();
 
   const resolveAuthor = useCallback<ResolveAuthor>(
@@ -133,15 +147,13 @@ export function Wall() {
   const [inviteNudgeDismissed, setInviteNudgeDismissed] = useState(
     () => getLocalString(inviteNudgeStorageKey) === "true",
   );
+  const [showBackToFirstPost, setShowBackToFirstPost] = useState(false);
+  const wallListRef = useRef<FlatList<WallListItem>>(null);
+  const wallHeaderScrollY = useRef(new Animated.Value(0)).current;
+  const backToFirstPostVisibility = useRef(new Animated.Value(0)).current;
   const canLoadMorePostsRef = useRef(false);
   const loadMorePostsRef = useRef(loadMorePosts);
   const postsLengthRef = useRef(posts.length);
-  const postCountLabel =
-    totalRemotePostCount !== undefined
-      ? `${loadedRemotePostCount} / ${totalRemotePostCount} loaded`
-      : hasMorePosts
-        ? `${loadedRemotePostCount}+ loaded`
-        : `${posts.length} saved`;
 
   useEffect(() => {
     setInviteNudgeDismissed(getLocalString(inviteNudgeStorageKey) === "true");
@@ -152,6 +164,23 @@ export function Wall() {
     loadMorePostsRef.current = loadMorePosts;
     postsLengthRef.current = posts.length;
   }, [hasMorePosts, isLoadingMorePosts, loadMorePosts, posts.length]);
+
+  useEffect(() => {
+    Animated.timing(backToFirstPostVisibility, {
+      duration: 180,
+      toValue: showBackToFirstPost ? 1 : 0,
+      useNativeDriver: true,
+    }).start();
+  }, [backToFirstPostVisibility, showBackToFirstPost]);
+
+  const handleWallScroll = useMemo(
+    () =>
+      Animated.event(
+        [{ nativeEvent: { contentOffset: { y: wallHeaderScrollY } } }],
+        { useNativeDriver: false },
+      ),
+    [wallHeaderScrollY],
+  );
 
   const wallItems = useMemo<WallListItem[]>(() => {
     if (!hydrated) {
@@ -215,17 +244,6 @@ export function Wall() {
     [addComment, commentDrafts],
   );
 
-  const confirmClearLocalData = useCallback(() => {
-    Alert.alert(
-      "Clear local memories?",
-      "This only clears the timeline on this device.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Clear", style: "destructive", onPress: clearLocalData },
-      ],
-    );
-  }, [clearLocalData]);
-
   const confirmSignOut = useCallback(() => {
     Alert.alert(
       "Sign out?",
@@ -262,18 +280,30 @@ export function Wall() {
     loadMorePostsRef.current();
   }, []);
 
+  const scrollToTop = useCallback(() => {
+    tapFeedback();
+    wallHeaderScrollY.setValue(0);
+    wallListRef.current?.scrollToOffset({
+      animated: true,
+      offset: 0,
+    });
+  }, [wallHeaderScrollY]);
+
   const handleViewablePostsChanged = useRef(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
-      if (!canLoadMorePostsRef.current) {
-        return;
-      }
-
       const visiblePostIndex = viewableItems.reduce((maxIndex, item) => {
         const wallItem = item.item as WallListItem | undefined;
         return wallItem?.type === "post"
           ? Math.max(maxIndex, wallItem.postIndex)
           : maxIndex;
       }, -1);
+
+      setShowBackToFirstPost(visiblePostIndex >= backToFirstPostThreshold);
+
+      if (!canLoadMorePostsRef.current) {
+        return;
+      }
+
       const triggerIndex = Math.max(
         0,
         postsLengthRef.current - wallPrefetchTrailingItems - 1,
@@ -374,20 +404,17 @@ export function Wall() {
             ListHeaderComponent={
               <WallStickyHeader
                 childName={fam.childName}
-                hasMorePosts={hasMorePosts}
-                isLoadingMorePosts={isLoadingMorePosts}
-                loadedRemotePostCount={loadedRemotePostCount}
-                postCountLabel={postCountLabel}
-                renderedPostCount={posts.length}
-                showDiagnostics={posts.length > 0}
-                totalRemotePostCount={totalRemotePostCount}
+                scrollY={wallHeaderScrollY}
               />
             }
             maxToRenderPerBatch={10}
             onEndReached={requestMorePosts}
             onEndReachedThreshold={0.35}
+            onScroll={handleWallScroll}
             onViewableItemsChanged={handleViewablePostsChanged}
+            ref={wallListRef}
             renderItem={renderWallItem}
+            scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
             stickyHeaderIndices={[0]}
             viewabilityConfig={wallViewabilityConfig}
@@ -403,10 +430,11 @@ export function Wall() {
               activeMemberId={memberId}
               childName={fam.childName}
               forcedOffline={forcedOffline}
+              googleDeliveryConnection={fam.deliveryConnection}
               isOnline={isOnline}
               isSolo={isSolo}
               members={fam.members}
-              onClearLocalData={confirmClearLocalData}
+              onConnectGoogleDelivery={connectGoogleDelivery}
               onInvite={() => router.push("/invite")}
               onSignOut={confirmSignOut}
               setActiveMemberId={setActiveMemberId}
@@ -414,6 +442,44 @@ export function Wall() {
             />
           </ScrollView>
         )}
+
+        {activeTab === "home" ? (
+          <Animated.View
+            pointerEvents={showBackToFirstPost ? "auto" : "none"}
+            style={[
+              styles.backToFirstPostDock,
+              {
+                opacity: backToFirstPostVisibility,
+                transform: [
+                  {
+                    translateY: backToFirstPostVisibility.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [10, 0],
+                    }),
+                  },
+                  {
+                    scale: backToFirstPostVisibility.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.94, 1],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          >
+            <Pressable
+              accessibilityLabel="Go to top"
+              accessibilityRole="button"
+              onPress={scrollToTop}
+              style={({ pressed }) => [
+                styles.backToFirstPostButton,
+                pressed ? styles.backToFirstPostPressed : null,
+              ]}
+            >
+              <ArrowUp color={palette.ink} size={22} />
+            </Pressable>
+          </Animated.View>
+        ) : null}
 
         <BottomTabs
           activeTab={activeTab}
@@ -672,40 +738,32 @@ function EmptyWall({
 
 function WallStickyHeader({
   childName,
-  hasMorePosts,
-  isLoadingMorePosts,
-  loadedRemotePostCount,
-  postCountLabel,
-  renderedPostCount,
-  showDiagnostics,
-  totalRemotePostCount,
+  scrollY,
 }: {
   childName: string;
-  hasMorePosts: boolean;
-  isLoadingMorePosts: boolean;
-  loadedRemotePostCount: number;
-  postCountLabel: string;
-  renderedPostCount: number;
-  showDiagnostics: boolean;
-  totalRemotePostCount?: number;
+  scrollY: Animated.Value;
 }) {
-  return (
-    <View style={styles.stickyHeader}>
-      <View style={styles.pageHeader}>
-        <Text style={styles.pageTitle}>{childName}&apos;s wall</Text>
-        <Text style={styles.pageMeta}>{postCountLabel}</Text>
-      </View>
+  const opacity = scrollY.interpolate({
+    inputRange: [0, 72],
+    outputRange: [1, 0],
+    extrapolate: "clamp",
+  });
+  const translateY = scrollY.interpolate({
+    inputRange: [0, 72],
+    outputRange: [0, -14],
+    extrapolate: "clamp",
+  });
 
-      {showDiagnostics ? (
-        <WallDiagnostics
-          hasMorePosts={hasMorePosts}
-          isLoadingMorePosts={isLoadingMorePosts}
-          loadedRemotePostCount={loadedRemotePostCount}
-          renderedPostCount={renderedPostCount}
-          totalRemotePostCount={totalRemotePostCount}
-        />
-      ) : null}
-    </View>
+  return (
+    <Animated.View
+      style={[styles.stickyHeader, { opacity, transform: [{ translateY }] }]}
+    >
+      <View style={styles.pageHeader}>
+        <Text numberOfLines={1} style={styles.pageTitle}>
+          {`${childName}'s story`}
+        </Text>
+      </View>
+    </Animated.View>
   );
 }
 
@@ -717,37 +775,6 @@ function WallLoadingFooter({ isLoading }: { isLoading: boolean }) {
   return (
     <View style={styles.loadMoreFooter}>
       <ActivityIndicator color={palette.berry} />
-    </View>
-  );
-}
-
-function WallDiagnostics({
-  hasMorePosts,
-  isLoadingMorePosts,
-  loadedRemotePostCount,
-  renderedPostCount,
-  totalRemotePostCount,
-}: {
-  hasMorePosts: boolean;
-  isLoadingMorePosts: boolean;
-  loadedRemotePostCount: number;
-  renderedPostCount: number;
-  totalRemotePostCount?: number;
-}) {
-  const totalText =
-    totalRemotePostCount === undefined ? "?" : String(totalRemotePostCount);
-  const pageState = isLoadingMorePosts
-    ? "loading"
-    : hasMorePosts
-      ? "more"
-      : "done";
-
-  return (
-    <View style={styles.wallDiagnostics}>
-      <Text style={styles.wallDiagnosticsText}>
-        Remote {loadedRemotePostCount}/{totalText} · Rendered{" "}
-        {renderedPostCount} · {pageState}
-      </Text>
     </View>
   );
 }
@@ -801,7 +828,15 @@ function MemoryCard({
         <StatusGlyph onPress={onShowStatusInfo} status={post.status} />
       </View>
 
-      {post.body ? <Text style={styles.postBody}>{post.body}</Text> : null}
+      {post.body ? (
+        <Text
+          ellipsizeMode="tail"
+          numberOfLines={postBodyPreviewLines}
+          style={styles.postBody}
+        >
+          {post.body}
+        </Text>
+      ) : null}
 
       {post.media.length > 0 ? <MediaCarousel media={post.media} /> : null}
 
@@ -1112,6 +1147,8 @@ function MediaPreviewer({
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView>(null);
+  const previewPanRef = useRef<PanGestureHandler>(null);
+  const previewDragY = useRef(new Animated.Value(0)).current;
   const [index, setIndex] = useState(initialIndex);
   const topInset = Math.max(insets.top, 44);
   const imageHeight = Math.max(240, height - topInset - 220);
@@ -1135,6 +1172,11 @@ function MediaPreviewer({
   );
   const cachedOriginalUris = useImageUriCache(originalCacheRequests);
   const cachedThumbnailUris = useImageUriCache(thumbnailCacheRequests);
+  const previewBodyOpacity = previewDragY.interpolate({
+    inputRange: [0, 180],
+    outputRange: [1, 0.72],
+    extrapolate: "clamp",
+  });
 
   const indexFromOffset = useCallback(
     (offset: number) =>
@@ -1147,14 +1189,68 @@ function MediaPreviewer({
       return;
     }
 
+    previewDragY.setValue(0);
     setIndex(initialIndex);
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({
-        animated: false,
-        x: initialIndex * width,
+    if (images.length > 1) {
+      requestAnimationFrame(() => {
+        scrollRef.current?.scrollTo({
+          animated: false,
+          x: initialIndex * width,
+        });
       });
+    }
+  }, [images.length, initialIndex, previewDragY, visible, width]);
+
+  const resetPreviewDrag = useCallback(() => {
+    Animated.spring(previewDragY, {
+      speed: 18,
+      toValue: 0,
+      useNativeDriver: true,
+    }).start();
+  }, [previewDragY]);
+
+  const closeFromSwipe = useCallback(() => {
+    Animated.timing(previewDragY, {
+      duration: 160,
+      toValue: height,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        previewDragY.setValue(0);
+        onClose();
+      }
     });
-  }, [initialIndex, visible, width]);
+  }, [height, onClose, previewDragY]);
+
+  const handlePreviewPan = useCallback(
+    ({ nativeEvent }: PanGestureHandlerGestureEvent) => {
+      previewDragY.setValue(Math.max(0, nativeEvent.translationY));
+    },
+    [previewDragY],
+  );
+
+  const handlePreviewPanState = useCallback(
+    ({ nativeEvent }: PanGestureHandlerStateChangeEvent) => {
+      if (nativeEvent.state === State.BEGAN) {
+        previewDragY.stopAnimation();
+        return;
+      }
+
+      if (
+        nativeEvent.state === State.END ||
+        nativeEvent.state === State.CANCELLED ||
+        nativeEvent.state === State.FAILED
+      ) {
+        if (nativeEvent.translationY > 84 || nativeEvent.velocityY > 850) {
+          closeFromSwipe();
+          return;
+        }
+
+        resetPreviewDrag();
+      }
+    },
+    [closeFromSwipe, previewDragY, resetPreviewDrag],
+  );
 
   const handleScroll = useCallback(
     ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1187,6 +1283,60 @@ function MediaPreviewer({
     return null;
   }
 
+  const previewDragStyle = {
+    opacity: previewBodyOpacity,
+    transform: [{ translateY: previewDragY }],
+  };
+  const activeImage = images[index] ?? images[0];
+  const previewContent =
+    images.length === 1 ? (
+      <Animated.View
+        collapsable={false}
+        style={[styles.previewGestureArea, previewDragStyle]}
+      >
+        <View style={[styles.previewSlide, { height: imageHeight, width }]}>
+          <Image
+            resizeMode="contain"
+            source={imageSource(
+              cachedOriginalUris[activeImage.uri] ?? activeImage.uri,
+            )}
+            style={styles.previewImage}
+          />
+        </View>
+      </Animated.View>
+    ) : (
+      <Animated.View
+        collapsable={false}
+        style={[styles.previewGestureArea, previewDragStyle]}
+      >
+        <GestureHandlerScrollView
+          horizontal
+          onMomentumScrollEnd={handleScrollSettled}
+          onScroll={handleScroll}
+          onScrollEndDrag={handleScrollSettled}
+          pagingEnabled
+          ref={scrollRef}
+          scrollEventThrottle={16}
+          showsHorizontalScrollIndicator={false}
+          simultaneousHandlers={previewPanRef}
+          style={styles.previewPager}
+        >
+          {images.map((image) => (
+            <View
+              key={image.id}
+              style={[styles.previewSlide, { height: imageHeight, width }]}
+            >
+              <Image
+                resizeMode="contain"
+                source={imageSource(cachedOriginalUris[image.uri] ?? image.uri)}
+                style={styles.previewImage}
+              />
+            </View>
+          ))}
+        </GestureHandlerScrollView>
+      </Animated.View>
+    );
+
   return (
     <Modal
       animationType="fade"
@@ -1213,30 +1363,18 @@ function MediaPreviewer({
           </Pressable>
         </View>
 
-        <ScrollView
-          horizontal
-          onMomentumScrollEnd={handleScrollSettled}
-          onScroll={handleScroll}
-          onScrollEndDrag={handleScrollSettled}
-          pagingEnabled
-          ref={scrollRef}
-          scrollEventThrottle={16}
-          showsHorizontalScrollIndicator={false}
-          style={styles.previewPager}
+        <PanGestureHandler
+          activeOffsetY={[-100000, 8]}
+          enabled={visible}
+          failOffsetX={[-56, 56]}
+          maxPointers={1}
+          onGestureEvent={handlePreviewPan}
+          onHandlerStateChange={handlePreviewPanState}
+          ref={previewPanRef}
+          simultaneousHandlers={scrollRef}
         >
-          {images.map((image) => (
-            <View
-              key={image.id}
-              style={[styles.previewSlide, { height: imageHeight, width }]}
-            >
-              <Image
-                resizeMode="contain"
-                source={imageSource(cachedOriginalUris[image.uri] ?? image.uri)}
-                style={styles.previewImage}
-              />
-            </View>
-          ))}
-        </ScrollView>
+          {previewContent}
+        </PanGestureHandler>
 
         {images.length > 1 ? (
           <ScrollView
@@ -1295,27 +1433,13 @@ const styles = StyleSheet.create({
     paddingBottom: 132,
   },
   stickyHeader: {
-    backgroundColor: "rgba(248,239,228,0.96)",
-    borderBottomColor: "rgba(37,45,43,0.08)",
-    borderBottomWidth: 1,
+    backgroundColor: "transparent",
     gap: 8,
     marginHorizontal: -18,
     marginTop: -18,
     paddingHorizontal: 18,
     paddingTop: 18,
     paddingBottom: 12,
-  },
-  wallDiagnostics: {
-    alignSelf: "flex-start",
-    backgroundColor: "rgba(37,45,43,0.06)",
-    borderRadius: radius.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  wallDiagnosticsText: {
-    color: palette.inkMuted,
-    fontSize: 12,
-    fontWeight: "800",
   },
   loadMoreFooter: {
     alignItems: "center",
@@ -1333,12 +1457,8 @@ const styles = StyleSheet.create({
     color: palette.ink,
     flexShrink: 1,
     fontSize: 26,
-    fontWeight: "900",
-  },
-  pageMeta: {
-    color: palette.inkMuted,
-    fontSize: 13,
     fontWeight: "700",
+    lineHeight: 32,
   },
   helperText: {
     color: palette.inkMuted,
@@ -1430,6 +1550,26 @@ const styles = StyleSheet.create({
     backgroundColor: palette.glassStrong,
   },
   tabButtonPressed: {
+    transform: [{ scale: 0.96 }],
+  },
+  backToFirstPostDock: {
+    bottom: 88,
+    position: "absolute",
+    right: 18,
+  },
+  backToFirstPostButton: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.78)",
+    borderColor: "rgba(255,255,255,0.86)",
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 50,
+    justifyContent: "center",
+    width: 50,
+    ...shadow.soft,
+  },
+  backToFirstPostPressed: {
+    opacity: 0.72,
     transform: [{ scale: 0.96 }],
   },
   nudge: {
@@ -1543,8 +1683,10 @@ const styles = StyleSheet.create({
   // Memory card content sits on a clean Surface (see ui/Glass) so the hierarchy
   // reads without competing gradients or heavy rims.
   card: {
+    alignSelf: "stretch",
     gap: 14,
     padding: 16,
+    width: "100%",
   },
   cardHeader: {
     alignItems: "center",
@@ -1594,9 +1736,9 @@ const styles = StyleSheet.create({
   },
   postBody: {
     color: palette.ink,
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: "600",
-    lineHeight: 25,
+    lineHeight: 22,
   },
   media: {
     gap: 10,
@@ -1663,6 +1805,9 @@ const styles = StyleSheet.create({
     height: 42,
     justifyContent: "center",
     width: 42,
+  },
+  previewGestureArea: {
+    flexGrow: 0,
   },
   previewPager: {
     flexGrow: 0,
@@ -1744,10 +1889,12 @@ const styles = StyleSheet.create({
   },
   commentComposer: {
     alignItems: "center",
+    alignSelf: "stretch",
     backgroundColor: "rgba(37,45,43,0.04)",
     borderRadius: radius.small,
     flexDirection: "row",
     gap: 8,
+    minHeight: 48,
     padding: 6,
   },
   commentInput: {
@@ -1755,8 +1902,11 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: "600",
+    lineHeight: 20,
     minHeight: 36,
     paddingHorizontal: 6,
+    paddingVertical: 0,
+    textAlignVertical: "center",
   },
   commentSend: {
     alignItems: "center",

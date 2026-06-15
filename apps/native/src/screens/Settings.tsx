@@ -3,15 +3,17 @@ import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   Check,
   ChevronRight,
+  CloudUpload,
   HardDrive,
   LogOut,
+  MailCheck,
   Trash2,
   UserPlus,
   Wifi,
   WifiOff,
 } from "lucide-react-native";
 
-import type { FamilyMember } from "@may/core";
+import type { FamilyMember, GoogleDeliveryConnection } from "@may/core";
 
 import { Surface } from "../ui/Glass";
 import {
@@ -24,10 +26,11 @@ export function SettingsPanel({
   activeMemberId,
   childName,
   forcedOffline,
+  googleDeliveryConnection,
   isOnline,
   isSolo,
   members,
-  onClearLocalData,
+  onConnectGoogleDelivery,
   onInvite,
   onSignOut,
   setActiveMemberId,
@@ -36,10 +39,11 @@ export function SettingsPanel({
   activeMemberId: string;
   childName: string;
   forcedOffline: boolean;
+  googleDeliveryConnection?: GoogleDeliveryConnection;
   isOnline: boolean;
   isSolo: boolean;
   members: FamilyMember[];
-  onClearLocalData: () => void;
+  onConnectGoogleDelivery: () => Promise<unknown>;
   onInvite: () => void;
   onSignOut: () => void;
   setActiveMemberId: (memberId: string) => void;
@@ -47,6 +51,10 @@ export function SettingsPanel({
 }) {
   const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
   const [cacheBusy, setCacheBusy] = useState(false);
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const deliveryConnected = googleDeliveryConnection?.status === "connected";
+  const deliveryNeedsReconnect =
+    googleDeliveryConnection?.status === "needs_reconnect";
 
   const loadCacheSize = useCallback(async () => {
     try {
@@ -106,6 +114,24 @@ export function SettingsPanel({
     );
   }, [loadCacheSize]);
 
+  const connectGoogleDelivery = useCallback(() => {
+    setDeliveryBusy(true);
+    onConnectGoogleDelivery()
+      .then(() =>
+        Alert.alert(
+          "Google delivery connected",
+          "May can now send emails and upload files with this Google account.",
+        ),
+      )
+      .catch((error) =>
+        Alert.alert(
+          "Could not connect Google delivery",
+          getErrorMessage(error),
+        ),
+      )
+      .finally(() => setDeliveryBusy(false));
+  }, [onConnectGoogleDelivery]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -113,10 +139,7 @@ export function SettingsPanel({
         <Text style={styles.subtitle}>For {childName}&apos;s wall</Text>
       </View>
 
-      <Section
-        hint="Whoever is selected is the one adding memories from this device."
-        title="Family"
-      >
+      <Section title="Family">
         <Surface style={styles.group}>
           {members.map((member, index) => {
             const selected = activeMemberId === member.id;
@@ -160,10 +183,34 @@ export function SettingsPanel({
         </Surface>
       </Section>
 
-      <Section
-        hint="Memories always send on their own once you're online. Force offline to feel how queuing works."
-        title="Sync"
-      >
+      <Section title="Delivery">
+        <Surface style={styles.group}>
+          <Row
+            disabled={deliveryBusy}
+            icon={
+              deliveryConnected ? (
+                <MailCheck color={palette.moss} size={20} />
+              ) : (
+                <CloudUpload color={palette.berry} size={20} />
+              )
+            }
+            label="Google delivery"
+            onPress={connectGoogleDelivery}
+            showChevron
+            value={
+              deliveryBusy
+                ? "Connecting"
+                : deliveryConnected
+                  ? "Connected"
+                  : deliveryNeedsReconnect
+                    ? "Reconnect"
+                    : "Connect"
+            }
+          />
+        </Surface>
+      </Section>
+
+      <Section title="Sync">
         <Surface style={styles.group}>
           <Row
             icon={
@@ -215,14 +262,6 @@ export function SettingsPanel({
           <Row
             destructive
             divider
-            icon={<Trash2 color={palette.berry} size={20} />}
-            label="Clear local memories"
-            onPress={onClearLocalData}
-            showChevron
-          />
-          <Row
-            destructive
-            divider
             icon={<LogOut color={palette.berry} size={20} />}
             label="Sign out"
             onPress={onSignOut}
@@ -234,20 +273,11 @@ export function SettingsPanel({
   );
 }
 
-function Section({
-  children,
-  hint,
-  title,
-}: {
-  children: ReactNode;
-  hint?: string;
-  title: string;
-}) {
+function Section({ children, title }: { children: ReactNode; title: string }) {
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
       {children}
-      {hint ? <Text style={styles.sectionHint}>{hint}</Text> : null}
     </View>
   );
 }
@@ -345,13 +375,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     paddingHorizontal: 4,
     textTransform: "uppercase",
-  },
-  sectionHint: {
-    color: palette.inkMuted,
-    fontSize: 12,
-    fontWeight: "600",
-    lineHeight: 17,
-    paddingHorizontal: 4,
   },
   group: {
     overflow: "hidden",

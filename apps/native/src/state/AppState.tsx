@@ -20,6 +20,7 @@ import {
 import {
   createRemoteInvite,
   createRemoteProfileAndFamily,
+  fetchRemoteFamily,
   joinRemoteFamilyWithCode,
   loadRemoteSessionForCurrentUser,
   subscribeToRemoteFamily,
@@ -35,12 +36,17 @@ import {
   removeLocalItem,
   setLocalString,
 } from "../services/storage";
+import { connectGoogleDelivery as connectGoogleDeliveryRemote } from "../services/googleDeliveryBackend";
 
 const PROFILE_KEY = "may.profile.v1";
 const FAMILY_KEY = "may.family.v1";
 const ACTIVE_MEMBER_KEY = "may.active-member.v1";
 export const wallStorageKey = (familyId: string) =>
   `may.memory-wall.${familyId}.v1`;
+
+const googleDeliveryPollIntervalsMs = [
+  1_500, 2_000, 2_500, 3_000, 4_000, 5_000,
+];
 
 type CreateFamilyInput = {
   yourName: string;
@@ -66,6 +72,7 @@ type AppStateValue = {
   signOut: () => Promise<void>;
   createProfileAndFamily: (input: CreateFamilyInput) => Promise<void>;
   addInvite: (label: string) => Promise<FamilyInvite>;
+  connectGoogleDelivery: () => Promise<void>;
   joinWithCode: (input: { yourName: string; code: string }) => Promise<boolean>;
   setActiveMemberId: (memberId: string) => void;
   reset: () => void;
@@ -75,6 +82,9 @@ const AppStateContext = createContext<AppStateValue | null>(null);
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong.";
+
+const wait = (milliseconds: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
@@ -251,6 +261,45 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [family, profile],
   );
 
+  const connectGoogleDelivery = useCallback(async () => {
+    const familyId = family?.id;
+    if (!familyId) {
+      throw new Error("Cannot connect Google delivery before a family exists.");
+    }
+    const previousDeliveryUpdatedAt = family.deliveryConnection?.updatedAt;
+
+    await connectGoogleDeliveryRemote({
+      familyId,
+    });
+
+    for (const intervalMs of googleDeliveryPollIntervalsMs) {
+      await wait(intervalMs);
+      const remoteFamily = await fetchRemoteFamily(familyId);
+      setFamily(remoteFamily);
+
+      const connection = remoteFamily.deliveryConnection;
+      if (!connection) {
+        continue;
+      }
+
+      if (connection.status === "connected") {
+        setSyncError(null);
+        return;
+      }
+
+      if (
+        connection.status === "needs_reconnect" &&
+        connection.updatedAt !== previousDeliveryUpdatedAt
+      ) {
+        throw new Error("Google delivery needs to be reconnected.");
+      }
+    }
+
+    throw new Error(
+      "May received Google permission, but delivery status did not update yet. Open Settings again in a moment.",
+    );
+  }, [family]);
+
   const joinWithCode = useCallback(
     async ({ yourName, code }: { yourName: string; code: string }) => {
       const remoteSession = await joinRemoteFamilyWithCode({ yourName, code });
@@ -319,6 +368,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       signOut,
       createProfileAndFamily,
       addInvite,
+      connectGoogleDelivery,
       joinWithCode,
       setActiveMemberId,
       reset,
@@ -337,6 +387,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       signOut,
       createProfileAndFamily,
       addInvite,
+      connectGoogleDelivery,
       joinWithCode,
       setActiveMemberId,
       reset,

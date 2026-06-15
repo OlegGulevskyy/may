@@ -6,6 +6,8 @@ import {
   type User,
 } from "@firebase/auth";
 
+import { GOOGLE_DELIVERY_SCOPES } from "@may/core";
+
 import { getFirebaseServices } from "./firebase";
 
 type GoogleSignInModule =
@@ -35,8 +37,14 @@ const env = (
   }
 ).process?.env;
 
-let didConfigureGoogleSignIn = false;
 let googleSignInModule: GoogleSignInModule | null = null;
+let googleSignInConfigKey: string | null = null;
+
+const BASE_GOOGLE_SIGN_IN_SCOPES = ["email", "profile"];
+const GOOGLE_DELIVERY_SIGN_IN_SCOPES = [
+  ...BASE_GOOGLE_SIGN_IN_SCOPES,
+  ...GOOGLE_DELIVERY_SCOPES,
+];
 
 const loadGoogleSignInModule = () => {
   try {
@@ -61,19 +69,38 @@ const getRequiredGoogleWebClientId = () => {
   return webClientId;
 };
 
-const configureGoogleSignIn = async () => {
-  if (didConfigureGoogleSignIn) {
+const configureGoogleSignIn = async ({
+  forceCodeForRefreshToken,
+  offlineAccess,
+  scopes = BASE_GOOGLE_SIGN_IN_SCOPES,
+}: {
+  forceCodeForRefreshToken?: boolean;
+  offlineAccess?: boolean;
+  scopes?: string[];
+} = {}) => {
+  const { GoogleSignin } = loadGoogleSignInModule();
+  const iosClientId = env?.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+  const webClientId = getRequiredGoogleWebClientId();
+  const configKey = JSON.stringify({
+    forceCodeForRefreshToken: Boolean(forceCodeForRefreshToken),
+    iosClientId,
+    offlineAccess: Boolean(offlineAccess),
+    scopes,
+    webClientId,
+  });
+
+  if (googleSignInConfigKey === configKey) {
     return;
   }
 
-  const { GoogleSignin } = loadGoogleSignInModule();
-  const iosClientId = env?.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
   GoogleSignin.configure({
+    forceCodeForRefreshToken,
     iosClientId,
-    scopes: ["email", "profile"],
-    webClientId: getRequiredGoogleWebClientId(),
+    offlineAccess,
+    scopes,
+    webClientId,
   });
-  didConfigureGoogleSignIn = true;
+  googleSignInConfigKey = configKey;
 };
 
 const toGoogleSignInErrorMessage = (
@@ -160,6 +187,41 @@ export const signInWithGoogle = async () => {
   }
 
   await signInWithGoogleCredential({ idToken });
+};
+
+export const requestGoogleDeliveryServerAuthCode = async () => {
+  await configureGoogleSignIn({
+    offlineAccess: true,
+    scopes: GOOGLE_DELIVERY_SIGN_IN_SCOPES,
+  });
+
+  const googleSignInModule = loadGoogleSignInModule();
+  const { GoogleSignin, isSuccessResponse } = googleSignInModule;
+
+  try {
+    await GoogleSignin.hasPlayServices({
+      showPlayServicesUpdateDialog: true,
+    });
+
+    const response = await GoogleSignin.signIn();
+    if (!isSuccessResponse(response)) {
+      throw new Error("Google permission request was cancelled.");
+    }
+
+    const { serverAuthCode, user } = response.data;
+    if (!serverAuthCode) {
+      throw new Error(
+        "Google did not return a server authorization code. Check EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID and make sure offline access is enabled for this OAuth client.",
+      );
+    }
+
+    return {
+      googleEmail: user.email,
+      serverAuthCode,
+    };
+  } catch (error) {
+    throw new Error(toGoogleSignInErrorMessage(error, googleSignInModule));
+  }
 };
 
 export const signOutCurrentUser = async () => {

@@ -61,6 +61,27 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      match /deliveryGrantRequests/{requestId} {
+        allow create: if familyMember(familyId)
+          && request.resource.data.keys().hasOnly([
+            "createdAt",
+            "createdBy",
+            "familyId",
+            "googleEmail",
+            "serverAuthCode"
+          ])
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.familyId == familyId
+          && request.resource.data.createdAt is string
+          && request.resource.data.googleEmail is string
+          && request.resource.data.serverAuthCode is string;
+        allow read, update, delete: if false;
+      }
+
+      match /private/{privateDocId} {
+        allow read, write: if false;
+      }
+
       match /posts/{postId} {
         allow read, create, update: if familyMember(familyId);
         allow delete: if false;

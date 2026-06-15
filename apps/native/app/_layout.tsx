@@ -1,5 +1,7 @@
 import { Stack } from "expo-router";
 import { useEffect } from "react";
+import { StyleSheet } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import * as SystemUI from "expo-system-ui";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -12,22 +14,30 @@ const AppLayout = () => {
   }, []);
 
   return (
-    <SafeAreaProvider>
-      <AppStateProvider>
-        <MemoryWallProvider>
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              animation: "slide_from_right",
-              contentStyle: {
-                backgroundColor: "#f7efe7",
-              },
-            }}
-          />
-        </MemoryWallProvider>
-      </AppStateProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <SafeAreaProvider>
+        <AppStateProvider>
+          <MemoryWallProvider>
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                animation: "slide_from_right",
+                contentStyle: {
+                  backgroundColor: "#f7efe7",
+                },
+              }}
+            />
+          </MemoryWallProvider>
+        </AppStateProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 };
 
 export default AppLayout;
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
+});
