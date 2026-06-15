@@ -29,9 +29,9 @@ pnpm --filter native dev
 
 The native app creates families and parent invites in Firebase when
 `apps/native/.env.local` contains the Expo public Firebase config. The memory
-wall is still local-first: it persists posts to device storage, supports a
-simulated offline mode, and walks new posts through the intended delivery
-states.
+wall writes post/comment/reaction documents to Firestore and keeps device
+storage as a local cache/outbox for offline sends. Media file uploads and
+Gmail/Drive delivery are still backend follow-up work.
 
 ## Firebase setup
 
@@ -86,9 +86,8 @@ For local function emulator testing, put those same two values in
 firebase deploy --only firestore:may-default,storage,functions
 ```
 
-The first backend iteration should replace the native simulated sync with real
-Firestore document writes, Firebase Storage uploads, and a durable local upload
-outbox.
+The next backend iteration should add Firebase Storage uploads for media,
+thumbnail processing, and the Gmail/Drive delivery consent flow.
 
 ### Utilities
 

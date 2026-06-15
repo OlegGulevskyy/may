@@ -33,9 +33,10 @@ export const persistPickedAsset = async (
 };
 
 const getExtension = (asset: ImagePickerAsset, kind: MemoryMediaKind) => {
-  const fromFileName = asset.fileName?.split(".").pop();
+  const fromMimeType = extensionFromMimeType(asset.mimeType);
   const fromUri = asset.uri.split("?")[0]?.split(".").pop();
-  const raw = fromFileName || fromUri;
+  const fromFileName = asset.fileName?.split(".").pop();
+  const raw = fromMimeType || fromUri || fromFileName;
 
   if (raw && raw.length <= 5) {
     return raw.toLowerCase();
@@ -50,6 +51,28 @@ const getExtension = (asset: ImagePickerAsset, kind: MemoryMediaKind) => {
   }
 
   return "jpg";
+};
+
+const extensionFromMimeType = (mimeType?: string) => {
+  switch (mimeType?.toLowerCase()) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/heic":
+      return "heic";
+    case "image/heif":
+      return "heif";
+    case "video/mp4":
+      return "mp4";
+    case "video/quicktime":
+      return "mov";
+    case "audio/m4a":
+    case "audio/x-m4a":
+      return "m4a";
+    default:
+      return undefined;
+  }
 };
 
 const defaultMimeType = (kind: MemoryMediaKind, extension: string) => {

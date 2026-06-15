@@ -21,10 +21,7 @@ export function BackBar({ onBack }: { onBack: () => void }) {
       accessibilityRole="button"
       hitSlop={10}
       onPress={onBack}
-      style={({ pressed }) => [
-        styles.backBar,
-        pressed ? styles.pressed : null,
-      ]}
+      style={({ pressed }) => [styles.backBar, pressed ? styles.pressed : null]}
     >
       <ChevronLeft color={palette.ink} size={22} />
     </Pressable>
@@ -59,6 +56,21 @@ export function ScreenBackground({
       {children}
     </View>
   );
+}
+
+/**
+ * A clean, mostly-opaque card. Unlike {@link GlassCard} it skips the blur and
+ * gradient highlight, so content hierarchy reads clearly without competing
+ * surfaces. This is the default surface for the wall and settings.
+ */
+export function Surface({
+  children,
+  style,
+}: {
+  children: ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return <View style={[styles.surface, style]}>{children}</View>;
 }
 
 /**
@@ -188,6 +200,13 @@ const styles = StyleSheet.create({
     borderRadius: radius.large,
     borderWidth: 1,
     overflow: "hidden",
+  },
+  surface: {
+    backgroundColor: "rgba(255,255,255,0.74)",
+    borderColor: "rgba(37,45,43,0.06)",
+    borderRadius: radius.large,
+    borderWidth: 1,
+    ...shadow.soft,
   },
   highlight: {
     height: "56%",

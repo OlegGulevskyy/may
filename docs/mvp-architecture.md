@@ -12,23 +12,25 @@
 ## Data Flow
 
 1. A parent creates a post with text and optional image, video, or audio media.
-2. The app stores the post locally immediately.
-3. When online, the real implementation will create a Firestore post and upload
-   media to Firebase Storage under:
+2. The app stores the post locally immediately as a cache/outbox.
+3. When online, the app writes the post document to Firestore at
+   `families/{familyId}/posts/{postId}`. Media upload will later write original
+   files to Firebase Storage under:
 
 ```txt
 families/{familyId}/posts/{postId}/media/{mediaId}/original
 ```
 
-4. Storage functions generate canonical image thumbnails.
-5. A delivery function copies/summarizes the post into Google Drive and sends a
+4. Storage functions will generate canonical image thumbnails.
+5. A delivery function will copy/summarize the post into Google Drive and send a
    Gmail message to the child's inbox.
-6. Firestore status updates drive realtime UI updates for both parents.
+6. Firestore post snapshots drive realtime UI updates for both parents.
 
 ## Delivery Statuses
 
 - `local`: created on-device
 - `queued`: waiting for network or upload worker
+- `synced`: saved to Firestore
 - `uploading`: media upload in progress
 - `stored`: media has reached cloud storage and is ready for delivery
 - `emailing`: backend is delivering to Gmail/Drive
@@ -37,11 +39,10 @@ families/{familyId}/posts/{postId}/media/{mediaId}/original
 
 ## Next Backend Step
 
-Implement a native sync repository that:
+Extend the native sync repository so it:
 
-- writes post/comment/reaction documents to Firestore
 - uploads each local media file to Firebase Storage
 - stores upload progress and retry state in a durable local outbox
-- subscribes to Firestore post changes for realtime updates
-- keeps the current local POC behavior as the fallback when Firebase config is
-  missing
+- requests the Gmail/Drive consent needed for delivery
+- keeps the local cache/outbox behavior as the fallback when Firebase is
+  unavailable

@@ -11,26 +11,56 @@ import {
 } from "@may/core";
 
 import { buildSampleMemories } from "../data/demoMemories";
+import {
+  saveRemoteMemoryPost,
+  subscribeToRemoteMemoryWall,
+} from "../services/memoryBackend";
 import { getLocalString, setLocalString } from "../services/storage";
 import { wallStorageKey } from "../state/AppState";
 
-const syncStages: Array<{ status: MemoryDeliveryStatus; delayMs: number }> = [
-  { status: "queued", delayMs: 80 },
-  { status: "uploading", delayMs: 900 },
-  { status: "stored", delayMs: 1800 },
-  { status: "emailing", delayMs: 2800 },
-  { status: "delivered", delayMs: 3900 },
-];
+const syncableStatuses = new Set<MemoryDeliveryStatus>([
+  "local",
+  "queued",
+  "failed",
+]);
+const autoSyncStatuses = new Set<MemoryDeliveryStatus>(["local", "queued"]);
 
 type SendMemoryInput = {
   body: string;
   media: MemoryMedia[];
 };
 
+type PostsUpdater = (current: MemoryPost[]) => MemoryPost[];
+
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : "Something went wrong.";
+
+const mergeRemotePosts = (
+  localPosts: MemoryPost[],
+  remotePosts: MemoryPost[],
+) => {
+  const remotePostIds = new Set(remotePosts.map((post) => post.id));
+  const localOnlyPosts = localPosts.filter(
+    (post) => !remotePostIds.has(post.id),
+  );
+
+  return [...remotePosts, ...localOnlyPosts];
+};
+
+const toRemotePost = (post: MemoryPost): MemoryPost => ({
+  ...post,
+  errorMessage: undefined,
+  status: syncableStatuses.has(post.status) ? "synced" : post.status,
+  updatedAt: new Date().toISOString(),
+});
+
+const hasUploadableLocalMedia = (post: MemoryPost) =>
+  post.media.some((media) => media.uri.startsWith("file://"));
+
 /**
- * Family-scoped memory wall. Posts persist locally per family and walk through
- * a simulated delivery pipeline when online. A new family starts empty — sample
- * content is only added on explicit request via {@link seedSampleMemories}.
+ * Family-scoped memory wall. Posts persist locally per family as a cache/outbox
+ * and sync to Firestore when the device is online. A new family starts empty —
+ * sample content is only added on explicit request via {@link seedSampleMemories}.
  */
 export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   const storageKey = wallStorageKey(familyId);
@@ -38,10 +68,22 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   const [hydrated, setHydrated] = useState(false);
   const [networkOnline, setNetworkOnline] = useState(true);
   const [forcedOffline, setForcedOffline] = useState(false);
+  const [remoteSyncEnabled, setRemoteSyncEnabled] = useState(false);
+  const pendingRemotePosts = useRef(new Map<string, MemoryPost>());
+  const postsRef = useRef<MemoryPost[]>([]);
+  const remotePostIds = useRef(new Set<string>());
+  const remotePostsRef = useRef<MemoryPost[]>([]);
   const syncingPostIds = useRef(new Set<string>());
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const isOnline = networkOnline && !forcedOffline;
+
+  const updatePosts = useCallback((updater: PostsUpdater) => {
+    setPosts((current) => {
+      const next = updater(current);
+      postsRef.current = next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,11 +92,14 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     try {
       const stored = getLocalString(storageKey);
       if (!cancelled) {
-        setPosts(stored ? (JSON.parse(stored) as MemoryPost[]) : []);
+        const nextPosts = stored ? (JSON.parse(stored) as MemoryPost[]) : [];
+        postsRef.current = nextPosts;
+        setPosts(nextPosts);
         setHydrated(true);
       }
     } catch {
       if (!cancelled) {
+        postsRef.current = [];
         setPosts([]);
         setHydrated(true);
       }
@@ -76,68 +121,177 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   }, []);
 
   useEffect(() => {
+    postsRef.current = posts;
+  }, [posts]);
+
+  useEffect(() => {
     if (!hydrated) {
       return;
     }
     setLocalString(storageKey, JSON.stringify(posts));
   }, [hydrated, posts, storageKey]);
 
-  useEffect(
-    () => () => {
-      timers.current.forEach(clearTimeout);
-    },
-    [],
-  );
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
 
-  const updatePost = useCallback(
-    (postId: string, updater: (post: MemoryPost) => MemoryPost) => {
-      setPosts((current) =>
-        current.map((post) => (post.id === postId ? updater(post) : post)),
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    remotePostIds.current = new Set();
+    remotePostsRef.current = [];
+    pendingRemotePosts.current.clear();
+    syncingPostIds.current.clear();
+    setRemoteSyncEnabled(false);
+
+    try {
+      unsubscribe = subscribeToRemoteMemoryWall({
+        familyId,
+        onError: () => {
+          if (!cancelled) {
+            setRemoteSyncEnabled(false);
+          }
+        },
+        onPosts: (remotePosts) => {
+          if (cancelled) {
+            return;
+          }
+          remotePostIds.current = new Set(remotePosts.map((post) => post.id));
+          remotePostsRef.current = remotePosts;
+          setRemoteSyncEnabled(true);
+          updatePosts((current) => mergeRemotePosts(current, remotePosts));
+        },
+      });
+    } catch {
+      setRemoteSyncEnabled(false);
+      return;
+    }
+
+    if (!unsubscribe) {
+      return;
+    }
+
+    setRemoteSyncEnabled(true);
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [familyId, hydrated, updatePosts]);
+
+  const markPostSynced = useCallback(
+    (
+      postId: string,
+      status: MemoryDeliveryStatus,
+      updatedAt: string,
+      media?: MemoryMedia[],
+    ) => {
+      updatePosts((current) =>
+        current.map((post) =>
+          post.id === postId
+            ? {
+                ...post,
+                errorMessage: undefined,
+                media: media ?? post.media,
+                status: syncableStatuses.has(post.status)
+                  ? status
+                  : post.status,
+                updatedAt,
+              }
+            : post,
+        ),
       );
     },
-    [],
+    [updatePosts],
   );
 
-  const runDemoSync = useCallback(
-    (postId: string) => {
-      if (!isOnline || syncingPostIds.current.has(postId)) {
+  const markPostFailed = useCallback(
+    (postId: string, error: unknown) => {
+      updatePosts((current) =>
+        current.map((post) =>
+          post.id === postId
+            ? {
+                ...post,
+                errorMessage: getErrorMessage(error),
+                status: "failed",
+                updatedAt: new Date().toISOString(),
+              }
+            : post,
+        ),
+      );
+    },
+    [updatePosts],
+  );
+
+  const persistPost = useCallback(
+    (post: MemoryPost) => {
+      if (!remoteSyncEnabled || !isOnline) {
         return;
       }
 
-      syncingPostIds.current.add(postId);
+      if (syncingPostIds.current.has(post.id)) {
+        pendingRemotePosts.current.set(post.id, post);
+        return;
+      }
 
-      syncStages.forEach((stage) => {
-        const timer = setTimeout(() => {
-          updatePost(postId, (post) => ({
-            ...post,
-            status: stage.status,
-            updatedAt: new Date().toISOString(),
-            deliveredAt:
-              stage.status === "delivered"
-                ? new Date().toISOString()
-                : post.deliveredAt,
-          }));
+      syncingPostIds.current.add(post.id);
+      const remotePost = toRemotePost(post);
 
-          if (stage.status === "delivered") {
-            syncingPostIds.current.delete(postId);
+      saveRemoteMemoryPost(remotePost)
+        .then((savedPost) => {
+          remotePostIds.current.add(post.id);
+          markPostSynced(
+            post.id,
+            savedPost.status,
+            savedPost.updatedAt,
+            savedPost.media,
+          );
+        })
+        .catch((error) => markPostFailed(post.id, error))
+        .finally(() => {
+          syncingPostIds.current.delete(post.id);
+          const pendingPost = pendingRemotePosts.current.get(post.id);
+
+          if (pendingPost) {
+            pendingRemotePosts.current.delete(post.id);
+            persistPost(pendingPost);
           }
-        }, stage.delayMs);
-
-        timers.current.push(timer);
-      });
+        });
     },
-    [isOnline, updatePost],
+    [isOnline, markPostFailed, markPostSynced, remoteSyncEnabled],
   );
 
   useEffect(() => {
-    if (!isOnline) {
+    if (!hydrated || !isOnline || !remoteSyncEnabled) {
       return;
     }
 
     posts
-      .filter((post) => ["local", "queued", "failed"].includes(post.status))
-      .forEach((post) => runDemoSync(post.id));
-  }, [isOnline, posts, runDemoSync]);
+      .filter((post) => {
+        const isRemotePost = remotePostIds.current.has(post.id);
+        return (
+          (autoSyncStatuses.has(post.status) && !isRemotePost) ||
+          (isRemotePost && hasUploadableLocalMedia(post))
+        );
+      })
+      .forEach(persistPost);
+  }, [hydrated, isOnline, persistPost, posts, remoteSyncEnabled]);
+
+  const replacePost = useCallback(
+    (nextPost: MemoryPost) => {
+      updatePosts((current) =>
+        current.map((post) => (post.id === nextPost.id ? nextPost : post)),
+      );
+    },
+    [updatePosts],
+  );
+
+  const shouldPersistPost = useCallback(
+    (post: MemoryPost) =>
+      syncableStatuses.has(post.status) || remotePostIds.current.has(post.id),
+    [],
+  );
 
   const sendMemory = useCallback(
     ({ body, media }: SendMemoryInput) => {
@@ -151,71 +305,92 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
         status: "queued" as const,
       };
 
-      setPosts((current) => [post, ...current]);
-
-      if (isOnline) {
-        runDemoSync(post.id);
-      }
+      updatePosts((current) => [post, ...current]);
+      persistPost(post);
     },
-    [activeMemberId, familyId, isOnline, runDemoSync],
+    [activeMemberId, familyId, persistPost, updatePosts],
   );
 
   const addComment = useCallback(
     (postId: string, body: string) => {
+      const post = postsRef.current.find((current) => current.id === postId);
+      if (!post) {
+        return;
+      }
+
       const comment: MemoryComment = {
         id: createId("comment"),
         authorId: activeMemberId,
         body,
         createdAt: new Date().toISOString(),
       };
-
-      updatePost(postId, (post) => ({
+      const nextPost = {
         ...post,
         comments: [...post.comments, comment],
         updatedAt: new Date().toISOString(),
-      }));
+      };
+
+      replacePost(nextPost);
+      if (shouldPersistPost(post)) {
+        persistPost(nextPost);
+      }
     },
-    [activeMemberId, updatePost],
+    [activeMemberId, persistPost, replacePost, shouldPersistPost],
   );
 
   const toggleReaction = useCallback(
     (postId: string, reaction: string) => {
-      updatePost(postId, (post) => {
-        const current = post.reactions[reaction] ?? [];
-        const next = current.includes(activeMemberId)
-          ? current.filter((memberId) => memberId !== activeMemberId)
-          : [...current, activeMemberId];
+      const post = postsRef.current.find((current) => current.id === postId);
+      if (!post) {
+        return;
+      }
 
-        return {
-          ...post,
-          reactions: {
-            ...post.reactions,
-            [reaction]: next,
-          },
-          updatedAt: new Date().toISOString(),
-        };
-      });
+      const current = post.reactions[reaction] ?? [];
+      const nextReaction = current.includes(activeMemberId)
+        ? current.filter((memberId) => memberId !== activeMemberId)
+        : [...current, activeMemberId];
+      const nextPost = {
+        ...post,
+        reactions: {
+          ...post.reactions,
+          [reaction]: nextReaction,
+        },
+        updatedAt: new Date().toISOString(),
+      };
+
+      replacePost(nextPost);
+      if (shouldPersistPost(post)) {
+        persistPost(nextPost);
+      }
     },
-    [activeMemberId, updatePost],
+    [activeMemberId, persistPost, replacePost, shouldPersistPost],
   );
 
   const retryPost = useCallback(
     (postId: string) => {
+      const post = postsRef.current.find((current) => current.id === postId);
+      if (!post) {
+        return;
+      }
+
       syncingPostIds.current.delete(postId);
-      updatePost(postId, (post) => ({
+      pendingRemotePosts.current.delete(postId);
+      const nextPost = {
         ...post,
         status: "queued",
         errorMessage: undefined,
         updatedAt: new Date().toISOString(),
-      }));
-      runDemoSync(postId);
+      } satisfies MemoryPost;
+
+      replacePost(nextPost);
+      persistPost(nextPost);
     },
-    [runDemoSync, updatePost],
+    [persistPost, replacePost],
   );
 
   const seedSampleMemories = useCallback(
     (partnerId?: string) => {
-      setPosts((current) =>
+      updatePosts((current) =>
         current.length > 0
           ? current
           : buildSampleMemories({
@@ -225,12 +400,12 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
             }),
       );
     },
-    [activeMemberId, familyId],
+    [activeMemberId, familyId, updatePosts],
   );
 
   const clearLocalData = useCallback(() => {
-    setPosts([]);
-  }, []);
+    updatePosts(() => (remoteSyncEnabled ? remotePostsRef.current : []));
+  }, [remoteSyncEnabled, updatePosts]);
 
   const sortedPosts = useMemo(
     () =>

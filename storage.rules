@@ -8,7 +8,7 @@ service firebase.storage {
 
     function familyMember(familyId) {
       return signedIn()
-        && firestore.exists(/databases/(default)/documents/families/$(familyId)/members/$(request.auth.uid));
+        && firestore.exists(/databases/may-default/documents/families/$(familyId)/members/$(request.auth.uid));
     }
 
     match /families/{familyId}/{allPaths=**} {

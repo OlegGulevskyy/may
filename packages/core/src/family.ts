@@ -14,7 +14,7 @@ export type InviteStatus = "pending" | "accepted";
 
 export type FamilyInvite = {
   code: string;
-  /** A warm, human label for who this is for, e.g. "Mom" or "my wife". */
+  /** A warm, human label for who this is for, e.g. "Alex" or "my sister". */
   label: string;
   status: InviteStatus;
   createdBy: string;

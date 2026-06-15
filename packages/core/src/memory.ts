@@ -10,6 +10,7 @@ export type MemoryMediaKind = "image" | "video" | "audio";
 export type MemoryDeliveryStatus =
   | "local"
   | "queued"
+  | "synced"
   | "uploading"
   | "stored"
   | "emailing"
@@ -21,6 +22,8 @@ export type MemoryMedia = {
   kind: MemoryMediaKind;
   uri: string;
   thumbnailUri?: string;
+  storagePath?: string;
+  thumbnailStoragePath?: string;
   fileName?: string;
   mimeType?: string;
   durationMs?: number;
@@ -60,6 +63,7 @@ export type NewMemoryPostInput = {
 export const DELIVERY_LABELS: Record<MemoryDeliveryStatus, string> = {
   local: "Saved locally",
   queued: "Waiting to sync",
+  synced: "Saved to Firebase",
   uploading: "Uploading media",
   stored: "Stored in Drive queue",
   emailing: "Sending email",

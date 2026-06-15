@@ -98,7 +98,7 @@ export default function Join() {
                 autoFocus
                 label="Your name"
                 onChangeText={setYourName}
-                placeholder="e.g. Mom"
+                placeholder="e.g. Alex"
                 value={yourName}
               />
               <Field

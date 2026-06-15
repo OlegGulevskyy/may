@@ -4,6 +4,7 @@ import * as SystemUI from "expo-system-ui";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AppStateProvider } from "../src/state/AppState";
+import { MemoryWallProvider } from "../src/state/MemoryWallProvider";
 
 const AppLayout = () => {
   useEffect(() => {
@@ -13,15 +14,17 @@ const AppLayout = () => {
   return (
     <SafeAreaProvider>
       <AppStateProvider>
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            animation: "slide_from_right",
-            contentStyle: {
-              backgroundColor: "#f7efe7",
-            },
-          }}
-        />
+        <MemoryWallProvider>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              animation: "slide_from_right",
+              contentStyle: {
+                backgroundColor: "#f7efe7",
+              },
+            }}
+          />
+        </MemoryWallProvider>
       </AppStateProvider>
     </SafeAreaProvider>
   );
