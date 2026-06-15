@@ -24,8 +24,8 @@ export const persistPickedAsset = async (
     kind,
     uri: destination,
     thumbnailUri: kind === "image" ? destination : undefined,
-    fileName: asset.fileName ?? `${id}.${extension}`,
-    mimeType: asset.mimeType ?? defaultMimeType(kind, extension),
+    fileName: `${id}.${extension}`,
+    mimeType: defaultMimeType(kind, extension),
     durationMs: asset.duration ?? undefined,
     width: asset.width,
     height: asset.height,
@@ -33,10 +33,10 @@ export const persistPickedAsset = async (
 };
 
 const getExtension = (asset: ImagePickerAsset, kind: MemoryMediaKind) => {
-  const fromMimeType = extensionFromMimeType(asset.mimeType);
   const fromUri = asset.uri.split("?")[0]?.split(".").pop();
   const fromFileName = asset.fileName?.split(".").pop();
-  const raw = fromMimeType || fromUri || fromFileName;
+  const fromMimeType = extensionFromMimeType(asset.mimeType);
+  const raw = fromUri || fromFileName || fromMimeType;
 
   if (raw && raw.length <= 5) {
     return raw.toLowerCase();
@@ -84,5 +84,14 @@ const defaultMimeType = (kind: MemoryMediaKind, extension: string) => {
     return "audio/m4a";
   }
 
-  return extension === "png" ? "image/png" : "image/jpeg";
+  switch (extension) {
+    case "heic":
+      return "image/heic";
+    case "heif":
+      return "image/heif";
+    case "png":
+      return "image/png";
+    default:
+      return "image/jpeg";
+  }
 };

@@ -23,8 +23,16 @@ const MemoryWallContext = createContext<MemoryWallValue | null>(null);
  * then re-hydrate once the real ids arrive.
  */
 export function MemoryWallProvider({ children }: { children: ReactNode }) {
-  const { family, activeMemberId } = useAppState();
-  const wall = useMemoryWall(family?.id ?? "", activeMemberId ?? "");
+  const { activeMemberId, authStatus, family, isRestoringSession } =
+    useAppState();
+  const wallReady =
+    authStatus === "signed-in" &&
+    !isRestoringSession &&
+    Boolean(family?.id && activeMemberId);
+  const familyId = wallReady ? (family?.id ?? "") : "";
+  const memberId = wallReady ? (activeMemberId ?? "") : "";
+
+  const wall = useMemoryWall(familyId, memberId);
   const drafts = useDrafts(family?.id ?? "");
 
   const value = useMemo<MemoryWallValue>(

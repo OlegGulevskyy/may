@@ -21,9 +21,14 @@ import { wallStorageKey } from "../state/AppState";
 const syncableStatuses = new Set<MemoryDeliveryStatus>([
   "local",
   "queued",
+  "uploading",
   "failed",
 ]);
-const autoSyncStatuses = new Set<MemoryDeliveryStatus>(["local", "queued"]);
+const autoSyncStatuses = new Set<MemoryDeliveryStatus>([
+  "local",
+  "queued",
+  "uploading",
+]);
 
 type SendMemoryInput = {
   body: string;
@@ -34,6 +39,14 @@ type PostsUpdater = (current: MemoryPost[]) => MemoryPost[];
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong.";
+
+const syncLog = (event: string, details?: Record<string, unknown>) => {
+  console.info(`[MaySync] ${event}`, details ?? {});
+};
+
+const syncWarn = (event: string, details?: Record<string, unknown>) => {
+  console.warn(`[MaySync] ${event}`, details ?? {});
+};
 
 const mergeRemotePosts = (
   localPosts: MemoryPost[],
@@ -56,6 +69,19 @@ const toRemotePost = (post: MemoryPost): MemoryPost => ({
 
 const hasUploadableLocalMedia = (post: MemoryPost) =>
   post.media.some((media) => media.uri.startsWith("file://"));
+
+const shouldAutoSyncPost = ({
+  isRemotePost,
+  isSyncing,
+  post,
+}: {
+  isRemotePost: boolean;
+  isSyncing: boolean;
+  post: MemoryPost;
+}) =>
+  !isSyncing &&
+  autoSyncStatuses.has(post.status) &&
+  (!isRemotePost || hasUploadableLocalMedia(post));
 
 /**
  * Family-scoped memory wall. Posts persist locally per family as a cache/outbox
@@ -145,6 +171,10 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     syncingPostIds.current.clear();
     setRemoteSyncEnabled(false);
 
+    if (!familyId || !activeMemberId) {
+      return;
+    }
+
     try {
       unsubscribe = subscribeToRemoteMemoryWall({
         familyId,
@@ -178,7 +208,7 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [familyId, hydrated, updatePosts]);
+  }, [activeMemberId, familyId, hydrated, updatePosts]);
 
   const markPostSynced = useCallback(
     (
@@ -208,6 +238,10 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
 
   const markPostFailed = useCallback(
     (postId: string, error: unknown) => {
+      syncWarn("post sync failed", {
+        message: getErrorMessage(error),
+        postId,
+      });
       updatePosts((current) =>
         current.map((post) =>
           post.id === postId
@@ -227,19 +261,56 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   const persistPost = useCallback(
     (post: MemoryPost) => {
       if (!remoteSyncEnabled || !isOnline) {
+        syncLog("post sync deferred", {
+          isOnline,
+          postId: post.id,
+          remoteSyncEnabled,
+          status: post.status,
+        });
         return;
       }
 
       if (syncingPostIds.current.has(post.id)) {
+        syncLog("post sync already running", {
+          postId: post.id,
+          status: post.status,
+        });
         pendingRemotePosts.current.set(post.id, post);
         return;
       }
 
       syncingPostIds.current.add(post.id);
       const remotePost = toRemotePost(post);
+      const hasLocalMedia = hasUploadableLocalMedia(post);
+
+      syncLog("post sync starting", {
+        hasLocalMedia,
+        mediaCount: post.media.length,
+        postId: post.id,
+        status: post.status,
+      });
+
+      if (hasLocalMedia) {
+        updatePosts((current) =>
+          current.map((item) =>
+            item.id === post.id && syncableStatuses.has(item.status)
+              ? {
+                  ...item,
+                  status: "uploading",
+                  updatedAt: new Date().toISOString(),
+                }
+              : item,
+          ),
+        );
+      }
 
       saveRemoteMemoryPost(remotePost)
         .then((savedPost) => {
+          syncLog("post sync finished", {
+            mediaCount: savedPost.media.length,
+            postId: post.id,
+            status: savedPost.status,
+          });
           remotePostIds.current.add(post.id);
           markPostSynced(
             post.id,
@@ -254,12 +325,16 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
           const pendingPost = pendingRemotePosts.current.get(post.id);
 
           if (pendingPost) {
+            syncLog("post sync flushing pending update", {
+              postId: post.id,
+              status: pendingPost.status,
+            });
             pendingRemotePosts.current.delete(post.id);
             persistPost(pendingPost);
           }
         });
     },
-    [isOnline, markPostFailed, markPostSynced, remoteSyncEnabled],
+    [isOnline, markPostFailed, markPostSynced, remoteSyncEnabled, updatePosts],
   );
 
   useEffect(() => {
@@ -270,10 +345,8 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     posts
       .filter((post) => {
         const isRemotePost = remotePostIds.current.has(post.id);
-        return (
-          (autoSyncStatuses.has(post.status) && !isRemotePost) ||
-          (isRemotePost && hasUploadableLocalMedia(post))
-        );
+        const isSyncing = syncingPostIds.current.has(post.id);
+        return shouldAutoSyncPost({ isRemotePost, isSyncing, post });
       })
       .forEach(persistPost);
   }, [hydrated, isOnline, persistPost, posts, remoteSyncEnabled]);
@@ -382,10 +455,17 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
         updatedAt: new Date().toISOString(),
       } satisfies MemoryPost;
 
+      syncLog("post retry requested", {
+        isOnline,
+        mediaCount: post.media.length,
+        postId,
+        remoteSyncEnabled,
+        status: post.status,
+      });
       replacePost(nextPost);
       persistPost(nextPost);
     },
-    [persistPost, replacePost],
+    [isOnline, persistPost, remoteSyncEnabled, replacePost],
   );
 
   const seedSampleMemories = useCallback(

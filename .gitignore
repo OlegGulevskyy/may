@@ -40,6 +40,8 @@ firestore-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
+apps/functions/.env.*
+!apps/functions/.env.example
 
 # turbo
 .turbo

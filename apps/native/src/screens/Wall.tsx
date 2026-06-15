@@ -575,13 +575,7 @@ function MemoryCard({
 
       {post.body ? <Text style={styles.postBody}>{post.body}</Text> : null}
 
-      {post.media.length > 0 ? (
-        <View style={styles.mediaGrid}>
-          {post.media.map((media) => (
-            <MediaTile key={media.id} media={media} />
-          ))}
-        </View>
-      ) : null}
+      {post.media.length > 0 ? <MediaCarousel media={post.media} /> : null}
 
       <View style={styles.cardActions}>
         <Pressable
@@ -643,18 +637,89 @@ function MemoryCard({
   );
 }
 
-function MediaTile({ media }: { media: MemoryMedia }) {
+function MediaCarousel({ media }: { media: MemoryMedia[] }) {
+  // The carousel measures its own width once, then sizes every slide to it.
+  // (`aspectRatio` does not resolve a height in this RN/Yoga build, so slide
+  // dimensions are pinned explicitly.)
+  const [width, setWidth] = useState(0);
+  const [index, setIndex] = useState(0);
+  const height = Math.round(width * 0.75);
+
+  return (
+    <View
+      onLayout={({ nativeEvent }) => setWidth(nativeEvent.layout.width)}
+      style={styles.media}
+    >
+      {width > 0 ? (
+        <>
+          <ScrollView
+            decelerationRate="fast"
+            horizontal
+            onMomentumScrollEnd={({ nativeEvent }) =>
+              setIndex(Math.round(nativeEvent.contentOffset.x / width))
+            }
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+          >
+            {media.map((item) => (
+              <MediaSlide
+                height={height}
+                key={item.id}
+                media={item}
+                width={width}
+              />
+            ))}
+          </ScrollView>
+          {media.length > 1 ? (
+            <View style={styles.mediaDots}>
+              {media.map((item, dotIndex) => (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.mediaDot,
+                    dotIndex === index ? styles.mediaDotActive : null,
+                  ]}
+                />
+              ))}
+            </View>
+          ) : null}
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+function MediaSlide({
+  height,
+  media,
+  width,
+}: {
+  height: number;
+  media: MemoryMedia;
+  width: number;
+}) {
   if (media.kind === "image") {
+    const uri = media.thumbnailUri ?? media.uri;
     return (
-      <Image
-        source={{ uri: media.thumbnailUri ?? media.uri }}
-        style={styles.mediaImage as ImageStyle}
-      />
+      <View style={[styles.mediaSlide, { height, width }]}>
+        <Image
+          onError={({ nativeEvent }) =>
+            console.warn("[MaySync] media image load failed", {
+              error: nativeEvent?.error,
+              mediaId: media.id,
+              uri,
+            })
+          }
+          resizeMode="cover"
+          source={{ uri }}
+          style={StyleSheet.absoluteFill as ImageStyle}
+        />
+      </View>
     );
   }
 
   return (
-    <View style={styles.mediaFallback}>
+    <View style={[styles.mediaSlide, styles.mediaFallback, { height, width }]}>
       {media.kind === "video" ? (
         <Film color={mediaTint.video} size={28} />
       ) : (
@@ -980,25 +1045,34 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     lineHeight: 25,
   },
-  mediaGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+  media: {
+    gap: 10,
   },
-  mediaImage: {
-    aspectRatio: 1,
+  mediaSlide: {
     backgroundColor: palette.surface,
     borderRadius: radius.medium,
-    width: "48.7%",
+    overflow: "hidden",
+  },
+  mediaDots: {
+    alignSelf: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  mediaDot: {
+    backgroundColor: palette.inkFaint,
+    borderRadius: 3,
+    height: 6,
+    width: 6,
+  },
+  mediaDotActive: {
+    backgroundColor: palette.ink,
+    width: 16,
   },
   mediaFallback: {
     alignItems: "center",
-    aspectRatio: 1,
     backgroundColor: "rgba(37,45,43,0.04)",
-    borderRadius: radius.medium,
     gap: 8,
     justifyContent: "center",
-    width: "48.7%",
   },
   mediaFallbackTitle: {
     color: palette.ink,

@@ -10,17 +10,14 @@
     "dev": "JAVA_HOME=$(/usr/libexec/java_home -v 21); PATH=\"$JAVA_HOME/bin:$PATH\" pnpm dlx firebase-tools emulators:start --only functions,firestore,storage"
   },
   "engines": {
-    "node": "20"
+    "node": ">=22"
   },
   "dependencies": {
-    "@may/core": "workspace:*",
-    "firebase-admin": "^14.0.0",
+    "firebase-admin": "^13.10.0",
     "firebase-functions": "^7.2.5",
-    "googleapis": "^173.0.0",
     "sharp": "^0.35.1"
   },
   "devDependencies": {
-    "@may/typescript-config": "workspace:*",
     "@types/node": "^20.19.43",
     "typescript": "6.0.3"
   }

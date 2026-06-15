@@ -6,13 +6,23 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function familyMember(familyId) {
-      return signedIn()
-        && firestore.exists(/databases/may-default/documents/families/$(familyId)/members/$(request.auth.uid));
+    function supportedMediaUpload() {
+      return request.resource != null
+        && request.resource.size < 100 * 1024 * 1024
+        && request.resource.contentType.matches("(image|video|audio)/.*");
+    }
+
+    // Storage rules can only read the default Firestore database through
+    // firestore.exists(). App data lives in the named may-default database, so
+    // membership remains enforced by Firestore while Storage gates signed-in
+    // media access and basic upload shape here.
+    match /families/{familyId}/posts/{postId}/media/{mediaId}/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn() && supportedMediaUpload();
     }
 
     match /families/{familyId}/{allPaths=**} {
-      allow read, write: if familyMember(familyId);
+      allow read, write: if false;
     }
   }
 }
