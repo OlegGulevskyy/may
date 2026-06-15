@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Image,
+  Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,9 +12,13 @@ import {
   TextInput,
   View,
   type ImageStyle,
+  useWindowDimensions,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import {
   Film,
@@ -41,6 +48,7 @@ import { useAppState } from "../state/AppState";
 import { useMemoryWallContext } from "../state/MemoryWallProvider";
 import { GlassCard, ScreenBackground, Surface } from "../ui/Glass";
 import { StatusGlyph, StatusLegend } from "../ui/MemoryStatus";
+import { imageSource, useImageUriCache } from "../services/imageCache";
 import { getLocalString, setLocalString } from "../services/storage";
 import { SettingsPanel } from "./Settings";
 import { tapFeedback } from "../ui/haptics";
@@ -57,6 +65,10 @@ const mediaTint: Record<MemoryMediaKind, string> = {
 
 const inviteNudgeDismissedKey = (familyId: string) =>
   `may.invite-nudge-dismissed.${familyId}.v1`;
+
+const mediaSlideGap = 10;
+const minMediaPeekWidth = 24;
+const maxMediaPeekWidth = 38;
 
 export function Wall() {
   const router = useRouter();
@@ -311,11 +323,11 @@ function BottomTabs({
             onNew();
           }}
           style={({ pressed }) => [
-            styles.newButton,
-            pressed ? styles.newButtonPressed : null,
+            styles.tabButton,
+            pressed ? styles.tabButtonPressed : null,
           ]}
         >
-          <Plus color="#fff" size={26} />
+          <Plus color={palette.inkFaint} size={23} />
         </Pressable>
 
         <TabButton
@@ -643,7 +655,99 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
   // dimensions are pinned explicitly.)
   const [width, setWidth] = useState(0);
   const [index, setIndex] = useState(0);
-  const height = Math.round(width * 0.75);
+  const shouldPeek = media.length > 1;
+  const maxAvailablePeek = Math.max(0, Math.floor((width - 120) / 2));
+  const peekWidth = shouldPeek
+    ? Math.min(
+        maxMediaPeekWidth,
+        maxAvailablePeek,
+        Math.max(minMediaPeekWidth, Math.round(width * 0.09)),
+      )
+    : 0;
+  const slideWidth = shouldPeek ? width - peekWidth * 2 : width;
+  const snapInterval = slideWidth + mediaSlideGap;
+  const maxOffset = shouldPeek
+    ? Math.max(0, (media.length - 1) * snapInterval - peekWidth * 2)
+    : 0;
+  const snapOffsets = useMemo(
+    () =>
+      shouldPeek
+        ? media.map((_, itemIndex) => {
+            if (itemIndex === 0) {
+              return 0;
+            }
+
+            const centeredOffset = itemIndex * snapInterval - peekWidth;
+            return Math.min(maxOffset, centeredOffset);
+          })
+        : undefined,
+    [maxOffset, media, peekWidth, shouldPeek, snapInterval],
+  );
+  const imageMedia = useMemo(
+    () => media.filter((item) => item.kind === "image"),
+    [media],
+  );
+  const originalCacheRequests = useMemo(
+    () =>
+      imageMedia.map((item) => ({
+        media: item,
+        uri: item.uri,
+        variant: "original" as const,
+      })),
+    [imageMedia],
+  );
+  const thumbnailCacheRequests = useMemo(
+    () =>
+      imageMedia.map((item) => ({
+        media: item,
+        uri: item.thumbnailUri ?? item.uri,
+        variant: "thumbnail" as const,
+      })),
+    [imageMedia],
+  );
+  const cachedThumbnailUris = useImageUriCache(thumbnailCacheRequests);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const height = Math.round(slideWidth * 0.75);
+
+  useImageUriCache(originalCacheRequests);
+
+  const updateIndexFromOffset = useCallback(
+    (offset: number) => {
+      if (!shouldPeek || !snapOffsets) {
+        const nextIndex = Math.round(offset / slideWidth);
+        setIndex((current) =>
+          current === nextIndex
+            ? current
+            : Math.max(0, Math.min(media.length - 1, nextIndex)),
+        );
+        return;
+      }
+
+      const nextIndex = snapOffsets.reduce(
+        (closestIndex, snapOffset, itemIndex) =>
+          Math.abs(snapOffset - offset) <
+          Math.abs(snapOffsets[closestIndex] - offset)
+            ? itemIndex
+            : closestIndex,
+        0,
+      );
+
+      setIndex((current) => (current === nextIndex ? current : nextIndex));
+    },
+    [media.length, shouldPeek, slideWidth, snapOffsets],
+  );
+
+  const openPreview = useCallback(
+    (item: MemoryMedia) => {
+      const nextIndex = imageMedia.findIndex((image) => image.id === item.id);
+      if (nextIndex >= 0) {
+        setPreviewIndex(nextIndex);
+      }
+    },
+    [imageMedia],
+  );
+
+  const closePreview = useCallback(() => setPreviewIndex(null), []);
 
   return (
     <View
@@ -653,20 +757,33 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
       {width > 0 ? (
         <>
           <ScrollView
+            contentContainerStyle={shouldPeek ? styles.mediaTrack : undefined}
             decelerationRate="fast"
+            disableIntervalMomentum={shouldPeek}
             horizontal
             onMomentumScrollEnd={({ nativeEvent }) =>
-              setIndex(Math.round(nativeEvent.contentOffset.x / width))
+              updateIndexFromOffset(nativeEvent.contentOffset.x)
             }
-            pagingEnabled
+            onScroll={({ nativeEvent }) =>
+              updateIndexFromOffset(nativeEvent.contentOffset.x)
+            }
+            pagingEnabled={!shouldPeek}
+            scrollEventThrottle={16}
             showsHorizontalScrollIndicator={false}
+            snapToOffsets={snapOffsets}
           >
             {media.map((item) => (
               <MediaSlide
+                cachedUri={
+                  item.kind === "image"
+                    ? cachedThumbnailUris[item.thumbnailUri ?? item.uri]
+                    : undefined
+                }
                 height={height}
                 key={item.id}
                 media={item}
-                width={width}
+                onOpenPreview={openPreview}
+                width={slideWidth}
               />
             ))}
           </ScrollView>
@@ -683,6 +800,12 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
               ))}
             </View>
           ) : null}
+          <MediaPreviewer
+            images={imageMedia}
+            initialIndex={previewIndex ?? 0}
+            onClose={closePreview}
+            visible={previewIndex !== null}
+          />
         </>
       ) : null}
     </View>
@@ -690,18 +813,27 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
 }
 
 function MediaSlide({
+  cachedUri,
   height,
   media,
+  onOpenPreview,
   width,
 }: {
+  cachedUri?: string;
   height: number;
   media: MemoryMedia;
+  onOpenPreview?: (media: MemoryMedia) => void;
   width: number;
 }) {
   if (media.kind === "image") {
-    const uri = media.thumbnailUri ?? media.uri;
+    const uri = cachedUri ?? media.thumbnailUri ?? media.uri;
     return (
-      <View style={[styles.mediaSlide, { height, width }]}>
+      <Pressable
+        accessibilityLabel="Open image"
+        accessibilityRole="button"
+        onPress={() => onOpenPreview?.(media)}
+        style={[styles.mediaSlide, { height, width }]}
+      >
         <Image
           onError={({ nativeEvent }) =>
             console.warn("[MaySync] media image load failed", {
@@ -711,10 +843,10 @@ function MediaSlide({
             })
           }
           resizeMode="cover"
-          source={{ uri }}
+          source={imageSource(uri)}
           style={StyleSheet.absoluteFill as ImageStyle}
         />
-      </View>
+      </Pressable>
     );
   }
 
@@ -734,6 +866,182 @@ function MediaSlide({
         </Text>
       ) : null}
     </View>
+  );
+}
+
+function MediaPreviewer({
+  images,
+  initialIndex,
+  onClose,
+  visible,
+}: {
+  images: MemoryMedia[];
+  initialIndex: number;
+  onClose: () => void;
+  visible: boolean;
+}) {
+  const insets = useSafeAreaInsets();
+  const { height, width } = useWindowDimensions();
+  const scrollRef = useRef<ScrollView>(null);
+  const [index, setIndex] = useState(initialIndex);
+  const topInset = Math.max(insets.top, 44);
+  const imageHeight = Math.max(240, height - topInset - 220);
+  const originalCacheRequests = useMemo(
+    () =>
+      images.map((image) => ({
+        media: image,
+        uri: image.uri,
+        variant: "original" as const,
+      })),
+    [images],
+  );
+  const thumbnailCacheRequests = useMemo(
+    () =>
+      images.map((image) => ({
+        media: image,
+        uri: image.thumbnailUri ?? image.uri,
+        variant: "thumbnail" as const,
+      })),
+    [images],
+  );
+  const cachedOriginalUris = useImageUriCache(originalCacheRequests);
+  const cachedThumbnailUris = useImageUriCache(thumbnailCacheRequests);
+
+  const indexFromOffset = useCallback(
+    (offset: number) =>
+      Math.max(0, Math.min(images.length - 1, Math.round(offset / width))),
+    [images.length, width],
+  );
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setIndex(initialIndex);
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({
+        animated: false,
+        x: initialIndex * width,
+      });
+    });
+  }, [initialIndex, visible, width]);
+
+  const handleScroll = useCallback(
+    ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const nextIndex = indexFromOffset(nativeEvent.contentOffset.x);
+      setIndex((current) => (current === nextIndex ? current : nextIndex));
+    },
+    [indexFromOffset],
+  );
+
+  const handleScrollSettled = useCallback(
+    ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const nextIndex = indexFromOffset(nativeEvent.contentOffset.x);
+      setIndex((current) => (current === nextIndex ? current : nextIndex));
+    },
+    [indexFromOffset],
+  );
+
+  const goToIndex = useCallback(
+    (nextIndex: number) => {
+      setIndex(nextIndex);
+      scrollRef.current?.scrollTo({
+        animated: false,
+        x: nextIndex * width,
+      });
+    },
+    [width],
+  );
+
+  if (images.length === 0) {
+    return null;
+  }
+
+  return (
+    <Modal
+      animationType="fade"
+      onRequestClose={onClose}
+      transparent
+      visible={visible}
+    >
+      <StatusBar style="light" />
+      <SafeAreaView
+        edges={["bottom"]}
+        style={[styles.previewSafeArea, { paddingTop: topInset }]}
+      >
+        <View style={styles.previewHeader}>
+          <Text style={styles.previewCounter}>
+            {index + 1} / {images.length}
+          </Text>
+          <Pressable
+            accessibilityLabel="Close image preview"
+            accessibilityRole="button"
+            onPress={onClose}
+            style={styles.previewClose}
+          >
+            <X color="#fff" size={22} />
+          </Pressable>
+        </View>
+
+        <ScrollView
+          horizontal
+          onMomentumScrollEnd={handleScrollSettled}
+          onScroll={handleScroll}
+          onScrollEndDrag={handleScrollSettled}
+          pagingEnabled
+          ref={scrollRef}
+          scrollEventThrottle={16}
+          showsHorizontalScrollIndicator={false}
+          style={styles.previewPager}
+        >
+          {images.map((image) => (
+            <View
+              key={image.id}
+              style={[styles.previewSlide, { height: imageHeight, width }]}
+            >
+              <Image
+                resizeMode="contain"
+                source={imageSource(cachedOriginalUris[image.uri] ?? image.uri)}
+                style={styles.previewImage}
+              />
+            </View>
+          ))}
+        </ScrollView>
+
+        {images.length > 1 ? (
+          <ScrollView
+            contentContainerStyle={styles.previewThumbsContent}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.previewThumbs}
+          >
+            {images.map((image, itemIndex) => (
+              <Pressable
+                accessibilityLabel={`Show image ${itemIndex + 1}`}
+                accessibilityRole="button"
+                key={image.id}
+                onPress={() => goToIndex(itemIndex)}
+                style={[
+                  styles.previewThumb,
+                  itemIndex === index ? styles.previewThumbActive : null,
+                ]}
+              >
+                <Image
+                  resizeMode="cover"
+                  source={imageSource(
+                    cachedThumbnailUris[image.thumbnailUri ?? image.uri] ??
+                      image.thumbnailUri ??
+                      image.uri,
+                  )}
+                  style={styles.previewThumbImage}
+                />
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : null}
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -866,18 +1174,6 @@ const styles = StyleSheet.create({
   },
   tabButtonPressed: {
     transform: [{ scale: 0.96 }],
-  },
-  newButton: {
-    alignItems: "center",
-    backgroundColor: palette.berry,
-    borderRadius: radius.pill,
-    height: 56,
-    justifyContent: "center",
-    width: 56,
-    ...shadow.soft,
-  },
-  newButtonPressed: {
-    transform: [{ scale: 0.95 }],
   },
   nudge: {
     alignItems: "center",
@@ -1048,6 +1344,9 @@ const styles = StyleSheet.create({
   media: {
     gap: 10,
   },
+  mediaTrack: {
+    gap: mediaSlideGap,
+  },
   mediaSlide: {
     backgroundColor: palette.surface,
     borderRadius: radius.medium,
@@ -1083,6 +1382,65 @@ const styles = StyleSheet.create({
     color: palette.inkMuted,
     fontSize: 12,
     fontWeight: "700",
+  },
+  previewSafeArea: {
+    backgroundColor: "#0f1211",
+    flex: 1,
+  },
+  previewHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  previewCounter: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  previewClose: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderRadius: radius.pill,
+    height: 42,
+    justifyContent: "center",
+    width: 42,
+  },
+  previewPager: {
+    flexGrow: 0,
+  },
+  previewSlide: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewImage: {
+    height: "100%",
+    width: "100%",
+  },
+  previewThumbs: {
+    flexGrow: 0,
+  },
+  previewThumbsContent: {
+    gap: 10,
+    paddingBottom: 22,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+  },
+  previewThumb: {
+    borderColor: "transparent",
+    borderRadius: radius.small,
+    borderWidth: 2,
+    height: 58,
+    overflow: "hidden",
+    width: 58,
+  },
+  previewThumbActive: {
+    borderColor: "#fff",
+  },
+  previewThumbImage: {
+    height: "100%",
+    width: "100%",
   },
   cardActions: {
     borderTopColor: "rgba(37,45,43,0.07)",

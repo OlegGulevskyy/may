@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   Check,
   ChevronRight,
+  HardDrive,
   LogOut,
   Trash2,
   UserPlus,
@@ -13,6 +14,10 @@ import {
 import type { FamilyMember } from "@may/core";
 
 import { Surface } from "../ui/Glass";
+import {
+  clearImageCache,
+  getImageCacheSizeBytes,
+} from "../services/imageCache";
 import { palette, radius } from "../theme";
 
 export function SettingsPanel({
@@ -40,6 +45,67 @@ export function SettingsPanel({
   setActiveMemberId: (memberId: string) => void;
   toggleForcedOffline: () => void;
 }) {
+  const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
+
+  const loadCacheSize = useCallback(async () => {
+    try {
+      const bytes = await getImageCacheSizeBytes();
+      setCacheSizeBytes(bytes);
+    } catch (error) {
+      console.warn("[MaySync] image cache size failed", {
+        error: getErrorMessage(error),
+      });
+      setCacheSizeBytes(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getImageCacheSizeBytes()
+      .then((bytes) => {
+        if (!cancelled) {
+          setCacheSizeBytes(bytes);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn("[MaySync] image cache size failed", {
+            error: getErrorMessage(error),
+          });
+          setCacheSizeBytes(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const confirmClearImageCache = useCallback(() => {
+    Alert.alert(
+      "Clear application cache?",
+      "Cached wall images will download again when needed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: () => {
+            setCacheBusy(true);
+            clearImageCache()
+              .then(loadCacheSize)
+              .catch((error) =>
+                Alert.alert("Could not clear cache", getErrorMessage(error)),
+              )
+              .finally(() => setCacheBusy(false));
+          },
+        },
+      ],
+    );
+  }, [loadCacheSize]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -126,7 +192,29 @@ export function SettingsPanel({
       <Section title="This device">
         <Surface style={styles.group}>
           <Row
+            icon={<HardDrive color={palette.moss} size={20} />}
+            label="Application cache"
+            onPress={loadCacheSize}
+            value={
+              cacheBusy
+                ? "Clearing"
+                : cacheSizeBytes === null
+                  ? "Calculating"
+                  : formatCacheSize(cacheSizeBytes)
+            }
+          />
+          <Row
             destructive
+            disabled={cacheBusy}
+            divider
+            icon={<Trash2 color={palette.berry} size={20} />}
+            label="Clear application cache"
+            onPress={confirmClearImageCache}
+            showChevron
+          />
+          <Row
+            destructive
+            divider
             icon={<Trash2 color={palette.berry} size={20} />}
             label="Clear local memories"
             onPress={onClearLocalData}
@@ -165,6 +253,7 @@ function Section({
 }
 
 function Row({
+  disabled,
   destructive,
   divider,
   icon,
@@ -173,6 +262,7 @@ function Row({
   showChevron,
   value,
 }: {
+  disabled?: boolean;
   destructive?: boolean;
   divider?: boolean;
   icon: ReactNode;
@@ -184,10 +274,12 @@ function Row({
   return (
     <Pressable
       accessibilityRole="button"
+      disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
         styles.row,
         divider ? styles.rowDivider : null,
+        disabled ? styles.rowDisabled : null,
         pressed ? styles.rowPressed : null,
       ]}
     >
@@ -201,6 +293,28 @@ function Row({
       {showChevron ? <ChevronRight color={palette.inkFaint} size={18} /> : null}
     </Pressable>
   );
+}
+
+function formatCacheSize(bytes: number) {
+  if (bytes === 0) {
+    return "0 MB";
+  }
+
+  const gib = bytes / 1024 / 1024 / 1024;
+  if (gib >= 1) {
+    return `${gib >= 10 ? gib.toFixed(1) : gib.toFixed(2)} GB`;
+  }
+
+  const mib = bytes / 1024 / 1024;
+  if (mib < 0.1) {
+    return "< 0.1 MB";
+  }
+
+  return `${mib >= 10 ? mib.toFixed(1) : mib.toFixed(2)} MB`;
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Something went wrong.";
 }
 
 const styles = StyleSheet.create({
@@ -256,6 +370,9 @@ const styles = StyleSheet.create({
   },
   rowPressed: {
     opacity: 0.6,
+  },
+  rowDisabled: {
+    opacity: 0.45,
   },
   rowIcon: {
     alignItems: "center",

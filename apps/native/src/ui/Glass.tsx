@@ -13,16 +13,70 @@ import { ChevronLeft } from "lucide-react-native";
 
 import { gradients, palette, radius, shadow } from "../theme";
 
+type ExpoGlassEffectModule = typeof import("expo-glass-effect");
+type NativeGlassView = ExpoGlassEffectModule["GlassView"];
+
+declare const require: (
+  moduleName: "expo-glass-effect",
+) => ExpoGlassEffectModule;
+
+let glassEffectModule: ExpoGlassEffectModule | null | undefined;
+
+function getGlassEffectModule() {
+  if (glassEffectModule !== undefined) {
+    return glassEffectModule;
+  }
+
+  try {
+    glassEffectModule = require("expo-glass-effect");
+  } catch {
+    glassEffectModule = null;
+  }
+
+  return glassEffectModule;
+}
+
+function getNativeGlassView(): NativeGlassView | null {
+  const glassEffect = getGlassEffectModule();
+
+  try {
+    if (
+      glassEffect?.isLiquidGlassAvailable() &&
+      glassEffect.isGlassEffectAPIAvailable()
+    ) {
+      return glassEffect.GlassView;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 /** Lightweight back affordance for pushed onboarding screens. */
 export function BackBar({ onBack }: { onBack: () => void }) {
+  const NativeGlassView = getNativeGlassView();
+
   return (
     <Pressable
       accessibilityLabel="Go back"
       accessibilityRole="button"
       hitSlop={10}
       onPress={onBack}
-      style={({ pressed }) => [styles.backBar, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [
+        styles.backBar,
+        NativeGlassView ? styles.nativeBackBar : styles.fallbackBackBar,
+        pressed ? styles.pressed : null,
+      ]}
     >
+      {NativeGlassView ? (
+        <NativeGlassView
+          colorScheme="light"
+          glassEffectStyle="regular"
+          pointerEvents="none"
+          style={styles.backBarGlass}
+        />
+      ) : null}
       <ChevronLeft color={palette.ink} size={22} />
     </Pressable>
   );
@@ -73,10 +127,7 @@ export function Surface({
   return <View style={[styles.surface, style]}>{children}</View>;
 }
 
-/**
- * A frosted panel: blurs the gradient behind it, with a bright rim and a top
- * highlight to read as a single curved sheet of glass.
- */
+/** Native Liquid Glass on supported iOS, with a frosted fallback elsewhere. */
 export function GlassCard({
   children,
   style,
@@ -90,10 +141,35 @@ export function GlassCard({
   highlight?: boolean;
   lifted?: boolean;
 }) {
+  const NativeGlassView = getNativeGlassView();
+
+  if (NativeGlassView) {
+    return (
+      <NativeGlassView
+        colorScheme="light"
+        glassEffectStyle="regular"
+        style={[
+          styles.card,
+          styles.nativeCard,
+          lifted ? shadow.lifted : null,
+          style,
+        ]}
+        tintColor="rgba(255,255,255,0.14)"
+      >
+        {children}
+      </NativeGlassView>
+    );
+  }
+
   return (
     <BlurView
       intensity={intensity}
-      style={[styles.card, lifted ? shadow.lifted : shadow.soft, style]}
+      style={[
+        styles.card,
+        styles.fallbackCard,
+        lifted ? shadow.lifted : shadow.soft,
+        style,
+      ]}
       tint="light"
     >
       {highlight ? (
@@ -162,6 +238,8 @@ export function GlassButton({
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
+  const NativeGlassView = getNativeGlassView();
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -169,11 +247,20 @@ export function GlassButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.glassButton,
+        NativeGlassView ? styles.nativeGlassButton : styles.fallbackGlassButton,
         disabled ? styles.primaryDisabled : null,
         pressed && !disabled ? styles.pressed : null,
         style,
       ]}
     >
+      {NativeGlassView ? (
+        <NativeGlassView
+          colorScheme="light"
+          glassEffectStyle="regular"
+          pointerEvents="none"
+          style={styles.glassButtonGlass}
+        />
+      ) : null}
       {icon}
       <Text style={styles.glassButtonLabel}>{label}</Text>
     </Pressable>
@@ -187,19 +274,38 @@ const styles = StyleSheet.create({
   },
   backBar: {
     alignItems: "center",
-    backgroundColor: palette.glass,
-    borderColor: palette.rimSoft,
     borderRadius: radius.pill,
     borderWidth: 1,
     height: 42,
     justifyContent: "center",
+    overflow: "hidden",
     width: 42,
   },
-  card: {
+  nativeBackBar: {
+    borderColor: "rgba(255,255,255,0.36)",
+  },
+  fallbackBackBar: {
+    backgroundColor: palette.glass,
     borderColor: palette.rimSoft,
+  },
+  backBarGlass: {
+    borderRadius: radius.pill,
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  card: {
     borderRadius: radius.large,
     borderWidth: 1,
     overflow: "hidden",
+  },
+  nativeCard: {
+    borderColor: "rgba(255,255,255,0.34)",
+  },
+  fallbackCard: {
+    borderColor: palette.rimSoft,
   },
   surface: {
     backgroundColor: "rgba(255,255,255,0.74)",
@@ -241,15 +347,29 @@ const styles = StyleSheet.create({
   },
   glassButton: {
     alignItems: "center",
-    backgroundColor: palette.glass,
-    borderColor: palette.rim,
     borderRadius: radius.medium,
     borderWidth: 1,
     flexDirection: "row",
     gap: 9,
     justifyContent: "center",
     minHeight: 54,
+    overflow: "hidden",
     paddingHorizontal: 22,
+  },
+  nativeGlassButton: {
+    borderColor: "rgba(255,255,255,0.42)",
+  },
+  fallbackGlassButton: {
+    backgroundColor: palette.glass,
+    borderColor: palette.rim,
+  },
+  glassButtonGlass: {
+    borderRadius: radius.medium,
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   glassButtonLabel: {
     color: palette.ink,
