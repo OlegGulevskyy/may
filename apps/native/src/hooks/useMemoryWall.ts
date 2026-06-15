@@ -29,6 +29,7 @@ const autoSyncStatuses = new Set<MemoryDeliveryStatus>([
   "queued",
   "uploading",
 ]);
+const wallPostPageSize = 10;
 
 type SendMemoryInput = {
   body: string;
@@ -48,16 +49,52 @@ const syncWarn = (event: string, details?: Record<string, unknown>) => {
   console.warn(`[MaySync] ${event}`, details ?? {});
 };
 
+const sortPostsByCreatedAt = (posts: MemoryPost[]) =>
+  [...posts].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+
+const shouldKeepLocalOnlyPost = (
+  post: MemoryPost,
+  localPostIds = new Set<string>(),
+) => syncableStatuses.has(post.status) || localPostIds.has(post.id);
+
+const selectInitialPosts = (storedPosts: MemoryPost[]) => {
+  const visiblePosts = sortPostsByCreatedAt(storedPosts).slice(
+    0,
+    wallPostPageSize,
+  );
+  const visiblePostIds = new Set(visiblePosts.map((post) => post.id));
+  const localOnlyPosts = storedPosts.filter(
+    (post) => !visiblePostIds.has(post.id) && shouldKeepLocalOnlyPost(post),
+  );
+
+  return sortPostsByCreatedAt([...visiblePosts, ...localOnlyPosts]);
+};
+
 const mergeRemotePosts = (
   localPosts: MemoryPost[],
   remotePosts: MemoryPost[],
+  localPostIds: Set<string>,
 ) => {
+  const localPostsById = new Map(localPosts.map((post) => [post.id, post]));
   const remotePostIds = new Set(remotePosts.map((post) => post.id));
+  const mergedRemotePosts = remotePosts.map((post) => {
+    const currentPost = localPostsById.get(post.id);
+
+    return currentPost &&
+      currentPost.updatedAt === post.updatedAt &&
+      currentPost.status === post.status
+      ? currentPost
+      : post;
+  });
   const localOnlyPosts = localPosts.filter(
-    (post) => !remotePostIds.has(post.id),
+    (post) =>
+      !remotePostIds.has(post.id) &&
+      shouldKeepLocalOnlyPost(post, localPostIds),
   );
 
-  return [...remotePosts, ...localOnlyPosts];
+  return sortPostsByCreatedAt([...mergedRemotePosts, ...localOnlyPosts]);
 };
 
 const toRemotePost = (post: MemoryPost): MemoryPost => ({
@@ -95,10 +132,19 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   const [networkOnline, setNetworkOnline] = useState(true);
   const [forcedOffline, setForcedOffline] = useState(false);
   const [remoteSyncEnabled, setRemoteSyncEnabled] = useState(false);
+  const [remotePostLimit, setRemotePostLimit] = useState(wallPostPageSize);
+  const [hasMorePosts, setHasMorePosts] = useState(false);
+  const [isLoadingMorePosts, setIsLoadingMorePosts] = useState(false);
+  const [loadedRemotePostCount, setLoadedRemotePostCount] = useState(0);
+  const [totalRemotePostCount, setTotalRemotePostCount] = useState<
+    number | undefined
+  >(undefined);
   const pendingRemotePosts = useRef(new Map<string, MemoryPost>());
+  const localPostIds = useRef(new Set<string>());
   const postsRef = useRef<MemoryPost[]>([]);
   const remotePostIds = useRef(new Set<string>());
   const remotePostsRef = useRef<MemoryPost[]>([]);
+  const remoteSubscriptionKeyRef = useRef<string | null>(null);
   const syncingPostIds = useRef(new Set<string>());
 
   const isOnline = networkOnline && !forcedOffline;
@@ -118,7 +164,11 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     try {
       const stored = getLocalString(storageKey);
       if (!cancelled) {
-        const nextPosts = stored ? (JSON.parse(stored) as MemoryPost[]) : [];
+        const parsedPosts = stored ? JSON.parse(stored) : [];
+        const storedPosts = Array.isArray(parsedPosts)
+          ? (parsedPosts as MemoryPost[])
+          : [];
+        const nextPosts = selectInitialPosts(storedPosts);
         postsRef.current = nextPosts;
         setPosts(nextPosts);
         setHydrated(true);
@@ -164,12 +214,27 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
 
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
+    const subscriptionKey =
+      familyId && activeMemberId ? `${familyId}:${activeMemberId}` : "";
 
-    remotePostIds.current = new Set();
-    remotePostsRef.current = [];
-    pendingRemotePosts.current.clear();
-    syncingPostIds.current.clear();
-    setRemoteSyncEnabled(false);
+    if (remoteSubscriptionKeyRef.current !== subscriptionKey) {
+      remoteSubscriptionKeyRef.current = subscriptionKey;
+      remotePostIds.current = new Set();
+      remotePostsRef.current = [];
+      pendingRemotePosts.current.clear();
+      localPostIds.current.clear();
+      syncingPostIds.current.clear();
+      setRemoteSyncEnabled(false);
+      setHasMorePosts(false);
+      setIsLoadingMorePosts(false);
+      setLoadedRemotePostCount(0);
+      setTotalRemotePostCount(undefined);
+
+      if (remotePostLimit !== wallPostPageSize) {
+        setRemotePostLimit(wallPostPageSize);
+        return;
+      }
+    }
 
     if (!familyId || !activeMemberId) {
       return;
@@ -181,24 +246,41 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
         onError: () => {
           if (!cancelled) {
             setRemoteSyncEnabled(false);
+            setIsLoadingMorePosts(false);
           }
         },
-        onPosts: (remotePosts) => {
+        onPosts: ({ hasMore, posts: remotePosts, totalPostCount }) => {
           if (cancelled) {
             return;
           }
-          remotePostIds.current = new Set(remotePosts.map((post) => post.id));
+          const nextRemotePostIds = new Set(remotePosts.map((post) => post.id));
+          nextRemotePostIds.forEach((postId) =>
+            localPostIds.current.delete(postId),
+          );
+          remotePostIds.current = nextRemotePostIds;
           remotePostsRef.current = remotePosts;
+          setHasMorePosts(hasMore);
+          setIsLoadingMorePosts(false);
+          setLoadedRemotePostCount(remotePosts.length);
+          setTotalRemotePostCount(totalPostCount);
           setRemoteSyncEnabled(true);
-          updatePosts((current) => mergeRemotePosts(current, remotePosts));
+          updatePosts((current) =>
+            mergeRemotePosts(current, remotePosts, localPostIds.current),
+          );
         },
+        postLimit: remotePostLimit,
       });
     } catch {
       setRemoteSyncEnabled(false);
+      setIsLoadingMorePosts(false);
       return;
     }
 
     if (!unsubscribe) {
+      setRemoteSyncEnabled(false);
+      setIsLoadingMorePosts(false);
+      setLoadedRemotePostCount(0);
+      setTotalRemotePostCount(undefined);
       return;
     }
 
@@ -208,7 +290,7 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [activeMemberId, familyId, hydrated, updatePosts]);
+  }, [activeMemberId, familyId, hydrated, remotePostLimit, updatePosts]);
 
   const markPostSynced = useCallback(
     (
@@ -362,7 +444,9 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
 
   const shouldPersistPost = useCallback(
     (post: MemoryPost) =>
-      syncableStatuses.has(post.status) || remotePostIds.current.has(post.id),
+      syncableStatuses.has(post.status) ||
+      remotePostIds.current.has(post.id) ||
+      localPostIds.current.has(post.id),
     [],
   );
 
@@ -378,6 +462,7 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
         status: "queued" as const,
       };
 
+      localPostIds.current.add(post.id);
       updatePosts((current) => [post, ...current]);
       persistPost(post);
     },
@@ -477,6 +562,9 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
               familyId,
               authorId: activeMemberId,
               partnerId,
+            }).map((post) => {
+              localPostIds.current.add(post.id);
+              return post;
             }),
       );
     },
@@ -487,26 +575,43 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     updatePosts(() => (remoteSyncEnabled ? remotePostsRef.current : []));
   }, [remoteSyncEnabled, updatePosts]);
 
-  const sortedPosts = useMemo(
-    () =>
-      [...posts].sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      ),
-    [posts],
+  const hasMoreKnownPosts =
+    totalRemotePostCount === undefined
+      ? hasMorePosts
+      : loadedRemotePostCount < totalRemotePostCount;
+
+  const loadMorePosts = useCallback(() => {
+    if (!hasMoreKnownPosts || isLoadingMorePosts || !remoteSyncEnabled) {
+      return;
+    }
+
+    setIsLoadingMorePosts(true);
+    setRemotePostLimit((current) => current + wallPostPageSize);
+  }, [hasMoreKnownPosts, isLoadingMorePosts, remoteSyncEnabled]);
+
+  const sortedPosts = useMemo(() => sortPostsByCreatedAt(posts), [posts]);
+
+  const toggleForcedOffline = useCallback(
+    () => setForcedOffline((current) => !current),
+    [],
   );
 
   return {
     addComment,
     clearLocalData,
     forcedOffline,
+    hasMorePosts: hasMoreKnownPosts,
     hydrated,
     isOnline,
+    isLoadingMorePosts,
+    loadMorePosts,
+    loadedRemotePostCount,
     posts: sortedPosts,
     retryPost,
     seedSampleMemories,
     sendMemory,
-    toggleForcedOffline: () => setForcedOffline((current) => !current),
+    toggleForcedOffline,
     toggleReaction,
+    totalRemotePostCount,
   };
 };

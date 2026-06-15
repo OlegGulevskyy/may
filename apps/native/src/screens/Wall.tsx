@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   Modal,
   type NativeScrollEvent,
@@ -12,6 +14,7 @@ import {
   TextInput,
   View,
   type ImageStyle,
+  type ViewToken,
   useWindowDimensions,
 } from "react-native";
 import { useRouter } from "expo-router";
@@ -56,6 +59,11 @@ import { palette, radius, shadow } from "../theme";
 
 type ResolveAuthor = (id: string) => { displayName: string; initials: string };
 type WallTab = "home" | "settings";
+type WallListItem =
+  | { id: "drafts"; type: "drafts" }
+  | { id: "empty"; type: "empty" }
+  | { id: "invite-nudge"; type: "invite-nudge" }
+  | { id: string; post: MemoryPost; postIndex: number; type: "post" };
 
 const mediaTint: Record<MemoryMediaKind, string> = {
   image: palette.moss,
@@ -69,6 +77,10 @@ const inviteNudgeDismissedKey = (familyId: string) =>
 const mediaSlideGap = 10;
 const minMediaPeekWidth = 24;
 const maxMediaPeekWidth = 38;
+const wallHorizontalPadding = 18;
+const memoryCardPadding = 16;
+const wallPrefetchTrailingItems = 4;
+const wallViewabilityConfig = { itemVisiblePercentThreshold: 20 };
 
 export function Wall() {
   const router = useRouter();
@@ -83,13 +95,18 @@ export function Wall() {
     clearLocalData,
     drafts,
     forcedOffline,
+    hasMorePosts,
     hydrated,
     isOnline,
+    isLoadingMorePosts,
+    loadMorePosts,
+    loadedRemotePostCount,
     posts,
     retryPost,
     seedSampleMemories,
     toggleForcedOffline,
     toggleReaction,
+    totalRemotePostCount,
   } = useMemoryWallContext();
 
   const resolveAuthor = useCallback<ResolveAuthor>(
@@ -116,10 +133,52 @@ export function Wall() {
   const [inviteNudgeDismissed, setInviteNudgeDismissed] = useState(
     () => getLocalString(inviteNudgeStorageKey) === "true",
   );
+  const canLoadMorePostsRef = useRef(false);
+  const loadMorePostsRef = useRef(loadMorePosts);
+  const postsLengthRef = useRef(posts.length);
+  const postCountLabel =
+    totalRemotePostCount !== undefined
+      ? `${loadedRemotePostCount} / ${totalRemotePostCount} loaded`
+      : hasMorePosts
+        ? `${loadedRemotePostCount}+ loaded`
+        : `${posts.length} saved`;
 
   useEffect(() => {
     setInviteNudgeDismissed(getLocalString(inviteNudgeStorageKey) === "true");
   }, [inviteNudgeStorageKey]);
+
+  useEffect(() => {
+    canLoadMorePostsRef.current = hasMorePosts && !isLoadingMorePosts;
+    loadMorePostsRef.current = loadMorePosts;
+    postsLengthRef.current = posts.length;
+  }, [hasMorePosts, isLoadingMorePosts, loadMorePosts, posts.length]);
+
+  const wallItems = useMemo<WallListItem[]>(() => {
+    if (!hydrated) {
+      return [];
+    }
+
+    const items: WallListItem[] = [];
+
+    if (drafts.items.length > 0) {
+      items.push({ id: "drafts", type: "drafts" });
+    }
+
+    if (posts.length === 0) {
+      items.push({ id: "empty", type: "empty" });
+      return items;
+    }
+
+    if (isSolo && !inviteNudgeDismissed) {
+      items.push({ id: "invite-nudge", type: "invite-nudge" });
+    }
+
+    posts.forEach((post, postIndex) => {
+      items.push({ id: post.id, post, postIndex, type: "post" });
+    });
+
+    return items;
+  }, [drafts.items.length, hydrated, inviteNudgeDismissed, isSolo, posts]);
 
   const openCompose = useCallback(
     (draftId?: string) => {
@@ -194,71 +253,146 @@ export function Wall() {
     setLocalString(inviteNudgeStorageKey, "true");
   }, [inviteNudgeStorageKey]);
 
+  const requestMorePosts = useCallback(() => {
+    if (!canLoadMorePostsRef.current) {
+      return;
+    }
+
+    canLoadMorePostsRef.current = false;
+    loadMorePostsRef.current();
+  }, []);
+
+  const handleViewablePostsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      if (!canLoadMorePostsRef.current) {
+        return;
+      }
+
+      const visiblePostIndex = viewableItems.reduce((maxIndex, item) => {
+        const wallItem = item.item as WallListItem | undefined;
+        return wallItem?.type === "post"
+          ? Math.max(maxIndex, wallItem.postIndex)
+          : maxIndex;
+      }, -1);
+      const triggerIndex = Math.max(
+        0,
+        postsLengthRef.current - wallPrefetchTrailingItems - 1,
+      );
+
+      if (visiblePostIndex >= triggerIndex) {
+        requestMorePosts();
+      }
+    },
+  ).current;
+
+  const renderWallItem = useCallback(
+    ({ item }: { item: WallListItem }) => {
+      switch (item.type) {
+        case "drafts":
+          return (
+            <DraftsSection
+              drafts={drafts.items}
+              onDelete={confirmDeleteDraft}
+              onResume={openCompose}
+            />
+          );
+        case "empty":
+          return (
+            <EmptyWall
+              isSolo={isSolo}
+              onInvite={() => router.push("/invite")}
+              onSeedSamples={() => seedSampleMemories(partner?.id)}
+            />
+          );
+        case "invite-nudge":
+          return (
+            <InviteNudge
+              onDismiss={dismissInviteNudge}
+              onPress={() => router.push("/invite")}
+            />
+          );
+        case "post":
+          return (
+            <MemoryCard
+              activeMemberId={memberId}
+              commentDraft={commentDrafts[item.post.id] ?? ""}
+              onCommentChange={(value) =>
+                setCommentDrafts((current) => ({
+                  ...current,
+                  [item.post.id]: value,
+                }))
+              }
+              onRetry={() => retryPost(item.post.id)}
+              onShowStatusInfo={() => setLegendVisible(true)}
+              onSubmitComment={() => submitComment(item.post.id)}
+              onToggleHeart={() => toggleReaction(item.post.id, "heart")}
+              post={item.post}
+              resolveAuthor={resolveAuthor}
+            />
+          );
+      }
+    },
+    [
+      commentDrafts,
+      confirmDeleteDraft,
+      dismissInviteNudge,
+      drafts.items,
+      isSolo,
+      memberId,
+      openCompose,
+      partner?.id,
+      resolveAuthor,
+      retryPost,
+      router,
+      seedSampleMemories,
+      submitComment,
+      toggleReaction,
+    ],
+  );
+
   return (
     <ScreenBackground>
       <StatusBar style="dark" />
       <SafeAreaView style={styles.safeArea}>
         {activeTab === "home" ? (
-          <ScrollView
+          <FlatList
             automaticallyAdjustKeyboardInsets
             contentContainerStyle={styles.scrollContent}
+            data={wallItems}
+            initialNumToRender={12}
             keyboardDismissMode="interactive"
             keyboardShouldPersistTaps="handled"
+            keyExtractor={(item) => item.id}
+            ListEmptyComponent={
+              !hydrated ? (
+                <Text style={styles.helperText}>Loading your memories…</Text>
+              ) : null
+            }
+            ListFooterComponent={
+              <WallLoadingFooter isLoading={isLoadingMorePosts} />
+            }
+            ListHeaderComponent={
+              <WallStickyHeader
+                childName={fam.childName}
+                hasMorePosts={hasMorePosts}
+                isLoadingMorePosts={isLoadingMorePosts}
+                loadedRemotePostCount={loadedRemotePostCount}
+                postCountLabel={postCountLabel}
+                renderedPostCount={posts.length}
+                showDiagnostics={posts.length > 0}
+                totalRemotePostCount={totalRemotePostCount}
+              />
+            }
+            maxToRenderPerBatch={10}
+            onEndReached={requestMorePosts}
+            onEndReachedThreshold={0.35}
+            onViewableItemsChanged={handleViewablePostsChanged}
+            renderItem={renderWallItem}
             showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.pageHeader}>
-              <Text style={styles.pageTitle}>{fam.childName}&apos;s wall</Text>
-              {posts.length > 0 ? (
-                <Text style={styles.pageMeta}>{posts.length} saved</Text>
-              ) : null}
-            </View>
-
-            {drafts.items.length > 0 ? (
-              <DraftsSection
-                drafts={drafts.items}
-                onDelete={confirmDeleteDraft}
-                onResume={openCompose}
-              />
-            ) : null}
-
-            {!hydrated ? (
-              <Text style={styles.helperText}>Loading your memories…</Text>
-            ) : posts.length === 0 ? (
-              <EmptyWall
-                isSolo={isSolo}
-                onInvite={() => router.push("/invite")}
-                onSeedSamples={() => seedSampleMemories(partner?.id)}
-              />
-            ) : (
-              <>
-                {isSolo && !inviteNudgeDismissed ? (
-                  <InviteNudge
-                    onDismiss={dismissInviteNudge}
-                    onPress={() => router.push("/invite")}
-                  />
-                ) : null}
-                {posts.map((post) => (
-                  <MemoryCard
-                    activeMemberId={memberId}
-                    commentDraft={commentDrafts[post.id] ?? ""}
-                    key={post.id}
-                    onCommentChange={(value) =>
-                      setCommentDrafts((current) => ({
-                        ...current,
-                        [post.id]: value,
-                      }))
-                    }
-                    onRetry={() => retryPost(post.id)}
-                    onShowStatusInfo={() => setLegendVisible(true)}
-                    onSubmitComment={() => submitComment(post.id)}
-                    onToggleHeart={() => toggleReaction(post.id, "heart")}
-                    post={post}
-                    resolveAuthor={resolveAuthor}
-                  />
-                ))}
-              </>
-            )}
-          </ScrollView>
+            stickyHeaderIndices={[0]}
+            viewabilityConfig={wallViewabilityConfig}
+            windowSize={5}
+          />
         ) : (
           <ScrollView
             contentContainerStyle={styles.scrollContent}
@@ -536,6 +670,88 @@ function EmptyWall({
   );
 }
 
+function WallStickyHeader({
+  childName,
+  hasMorePosts,
+  isLoadingMorePosts,
+  loadedRemotePostCount,
+  postCountLabel,
+  renderedPostCount,
+  showDiagnostics,
+  totalRemotePostCount,
+}: {
+  childName: string;
+  hasMorePosts: boolean;
+  isLoadingMorePosts: boolean;
+  loadedRemotePostCount: number;
+  postCountLabel: string;
+  renderedPostCount: number;
+  showDiagnostics: boolean;
+  totalRemotePostCount?: number;
+}) {
+  return (
+    <View style={styles.stickyHeader}>
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageTitle}>{childName}&apos;s wall</Text>
+        <Text style={styles.pageMeta}>{postCountLabel}</Text>
+      </View>
+
+      {showDiagnostics ? (
+        <WallDiagnostics
+          hasMorePosts={hasMorePosts}
+          isLoadingMorePosts={isLoadingMorePosts}
+          loadedRemotePostCount={loadedRemotePostCount}
+          renderedPostCount={renderedPostCount}
+          totalRemotePostCount={totalRemotePostCount}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function WallLoadingFooter({ isLoading }: { isLoading: boolean }) {
+  if (!isLoading) {
+    return null;
+  }
+
+  return (
+    <View style={styles.loadMoreFooter}>
+      <ActivityIndicator color={palette.berry} />
+    </View>
+  );
+}
+
+function WallDiagnostics({
+  hasMorePosts,
+  isLoadingMorePosts,
+  loadedRemotePostCount,
+  renderedPostCount,
+  totalRemotePostCount,
+}: {
+  hasMorePosts: boolean;
+  isLoadingMorePosts: boolean;
+  loadedRemotePostCount: number;
+  renderedPostCount: number;
+  totalRemotePostCount?: number;
+}) {
+  const totalText =
+    totalRemotePostCount === undefined ? "?" : String(totalRemotePostCount);
+  const pageState = isLoadingMorePosts
+    ? "loading"
+    : hasMorePosts
+      ? "more"
+      : "done";
+
+  return (
+    <View style={styles.wallDiagnostics}>
+      <Text style={styles.wallDiagnosticsText}>
+        Remote {loadedRemotePostCount}/{totalText} · Rendered{" "}
+        {renderedPostCount} · {pageState}
+      </Text>
+    </View>
+  );
+}
+
 function MemoryCard({
   activeMemberId,
   commentDraft,
@@ -653,7 +869,12 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
   // The carousel measures its own width once, then sizes every slide to it.
   // (`aspectRatio` does not resolve a height in this RN/Yoga build, so slide
   // dimensions are pinned explicitly.)
-  const [width, setWidth] = useState(0);
+  const { width: windowWidth } = useWindowDimensions();
+  const estimatedWidth = Math.max(
+    1,
+    Math.round(windowWidth - wallHorizontalPadding * 2 - memoryCardPadding * 2),
+  );
+  const [width, setWidth] = useState(estimatedWidth);
   const [index, setIndex] = useState(0);
   const shouldPeek = media.length > 1;
   const maxAvailablePeek = Math.max(0, Math.floor((width - 120) / 2));
@@ -751,8 +972,16 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
 
   return (
     <View
-      onLayout={({ nativeEvent }) => setWidth(nativeEvent.layout.width)}
-      style={styles.media}
+      onLayout={({ nativeEvent }) => {
+        const measuredWidth = Math.round(nativeEvent.layout.width);
+
+        setWidth((current) =>
+          measuredWidth > 0 && Math.abs(current - measuredWidth) > 1
+            ? measuredWidth
+            : current,
+        );
+      }}
+      style={[styles.media, { minHeight: height }]}
     >
       {width > 0 ? (
         <>
@@ -1064,6 +1293,34 @@ const styles = StyleSheet.create({
     gap: 16,
     padding: 18,
     paddingBottom: 132,
+  },
+  stickyHeader: {
+    backgroundColor: "rgba(248,239,228,0.96)",
+    borderBottomColor: "rgba(37,45,43,0.08)",
+    borderBottomWidth: 1,
+    gap: 8,
+    marginHorizontal: -18,
+    marginTop: -18,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  wallDiagnostics: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(37,45,43,0.06)",
+    borderRadius: radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  wallDiagnosticsText: {
+    color: palette.inkMuted,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  loadMoreFooter: {
+    alignItems: "center",
+    minHeight: 44,
+    justifyContent: "center",
   },
   pageHeader: {
     alignItems: "baseline",

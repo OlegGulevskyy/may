@@ -1,6 +1,8 @@
 import {
   collection,
   doc,
+  getCountFromServer,
+  limit as queryLimit,
   onSnapshot,
   orderBy,
   query,
@@ -359,41 +361,80 @@ export const subscribeToRemoteMemoryWall = ({
   familyId,
   onError,
   onPosts,
+  postLimit,
 }: {
   familyId: string;
   onError: (message: string) => void;
-  onPosts: (posts: MemoryPost[]) => void;
+  onPosts: (page: {
+    hasMore: boolean;
+    posts: MemoryPost[];
+    totalPostCount?: number;
+  }) => void;
+  postLimit: number;
 }): Unsubscribe | null => {
   const services = getSignedInServices();
   if (!services) {
     return null;
   }
 
-  syncLog("remote wall subscribe", { familyId });
+  syncLog("remote wall subscribe", { familyId, postLimit });
 
+  const postsCollection = collection(
+    services.db,
+    "families",
+    familyId,
+    "posts",
+  );
   const postsQuery = query(
-    collection(services.db, "families", familyId, "posts"),
+    postsCollection,
     orderBy("createdAt", "desc"),
+    queryLimit(postLimit + 1),
   );
 
   return onSnapshot(
     postsQuery,
     (snapshot) => {
+      const visibleDocs = snapshot.docs.slice(0, postLimit);
+      const hasMore = snapshot.docs.length > postLimit;
+
       syncLog("remote wall snapshot", {
         familyId,
+        hasMore,
         postCount: snapshot.docs.length,
+        visiblePostCount: visibleDocs.length,
       });
-      const posts = snapshot.docs.map((post) =>
+      const posts = visibleDocs.map((post) =>
         toMemoryPost(post.id, familyId, post.data() as Record<string, unknown>),
       );
-      Promise.all(posts.map((post) => withDownloadUrls(services.storage, post)))
-        .then(onPosts)
+      Promise.all([
+        Promise.all(
+          posts.map((post) => withDownloadUrls(services.storage, post)),
+        ),
+        getCountFromServer(postsCollection)
+          .then((countSnapshot) => countSnapshot.data().count)
+          .catch((error) => {
+            syncWarn("remote wall count failed", {
+              familyId,
+              message: getErrorMessage(error),
+            });
+            return undefined;
+          }),
+      ])
+        .then(([resolvedPosts, totalPostCount]) => {
+          syncLog("remote wall page ready", {
+            familyId,
+            hasMore,
+            loadedPostCount: resolvedPosts.length,
+            totalPostCount,
+          });
+          onPosts({ hasMore, posts: resolvedPosts, totalPostCount });
+        })
         .catch((error) => {
           syncWarn("remote media URL resolution failed", {
             familyId,
             message: getErrorMessage(error),
           });
-          onPosts(posts);
+          onPosts({ hasMore, posts });
         });
     },
     (error) => {

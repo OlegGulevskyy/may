@@ -96,3 +96,24 @@ This Turborepo has some additional tools already setup for you:
 - [Expo](https://docs.expo.dev/) for native development
 - [TypeScript](https://www.typescriptlang.org/) for static type checking
 - [Prettier](https://prettier.io) for code formatting
+
+### Dev Firestore data
+
+The functions package has a dev-only Admin SDK utility for wall stress data.
+It targets the `may-default` database by default and uses application-default
+credentials or the Firestore emulator when `FIRESTORE_EMULATOR_HOST` is set.
+
+```sh
+pnpm --filter functions dev:check-db
+pnpm --filter functions dev:seed-wall -- --count 100
+pnpm --filter functions dev:seed-wall -- --family-id family_abc --count 100
+pnpm --filter functions dev:clear-db -- --yes
+```
+
+`dev:seed-wall` duplicates the latest three posts in the selected family,
+including their existing media storage references. `dev:clear-db -- --yes`
+recursively deletes every root collection in the configured Firestore database.
+For cloud Firestore, authenticate the Admin SDK with
+`gcloud auth application-default login --project <project-id>` or set
+`GOOGLE_APPLICATION_CREDENTIALS` to a service account key with Firestore IAM
+access. For the local emulator, set `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080`.
