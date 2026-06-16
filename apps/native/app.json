@@ -20,7 +20,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.oleggulevskyy.may",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": true
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
