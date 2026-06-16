@@ -15,9 +15,7 @@
     "updates": {
       "fallbackToCacheTimeout": 0
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.oleggulevskyy.may"
@@ -49,6 +47,14 @@
           "microphonePermission": "May needs microphone access so you can record voice notes.",
           "enableBackgroundPlayback": false,
           "enableBackgroundRecording": false
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
         }
       ]
     ]
