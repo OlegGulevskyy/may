@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "expo start",
     "dev:client": "expo start --dev-client",
+    "eas-build-post-install": "cd ../.. && pnpm --filter @may/core --filter @may/ui build",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "eject": "expo eject"
