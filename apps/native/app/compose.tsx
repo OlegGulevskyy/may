@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
   KeyboardAvoidingView,
@@ -10,13 +10,22 @@ import {
   TextInput,
   View,
   type ImageStyle,
+  type TextInput as TextInputHandle,
 } from "react-native";
 import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Camera, Film, ImageIcon, Mic, Trash2, X } from "lucide-react-native";
 
-import type { MemoryMedia, MemoryMediaKind } from "@may/core";
+import {
+  richTextImageSources,
+  richTextPlainText,
+  type MemoryContentImageMap,
+  type MemoryMedia,
+  type MemoryMediaKind,
+  type MemoryRichTextDocument,
+  type MemoryRichTextNode,
+} from "@may/core";
 
 import { useComposerDraft } from "../src/hooks/useComposerDraft";
 import { useAppState } from "../src/state/AppState";
@@ -31,6 +40,184 @@ const mediaTint: Record<MemoryMediaKind, string> = {
   video: palette.berry,
   audio: palette.ink,
 };
+
+type ComposerTextSegment = {
+  id: string;
+  text: string;
+  type: "text";
+};
+
+type ComposerImageSegment = {
+  id: string;
+  mediaId: string;
+  type: "image";
+  uri: string;
+};
+
+type ComposerSegment = ComposerTextSegment | ComposerImageSegment;
+
+type TextSelection = {
+  end: number;
+  segmentId: string;
+  start: number;
+};
+
+const createSegmentId = (prefix: string) =>
+  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+const textSegment = (text = ""): ComposerTextSegment => ({
+  id: createSegmentId("text"),
+  text,
+  type: "text",
+});
+
+const imageSegment = (media: MemoryMedia): ComposerImageSegment => ({
+  id: createSegmentId("image"),
+  mediaId: media.id,
+  type: "image",
+  uri: media.uri,
+});
+
+const nodeText = (node: MemoryRichTextNode): string => {
+  if (typeof node.text === "string") {
+    return node.text;
+  }
+
+  const children = node.content?.map(nodeText).join("") ?? "";
+
+  switch (node.type) {
+    case "hardBreak":
+      return "\n";
+    case "paragraph":
+    case "heading":
+    case "blockquote":
+      return children ? `${children}\n` : "\n";
+    case "bulletList":
+    case "orderedList":
+      return children ? `${children}\n` : "";
+    case "image":
+      return "";
+    default:
+      return children;
+  }
+};
+
+const mediaForContentImage = (
+  source: string,
+  contentImageMap: MemoryContentImageMap | undefined,
+  media: MemoryMedia[],
+) => {
+  const mappedId = contentImageMap?.[source];
+  return media.find(
+    (item) =>
+      item.id === mappedId ||
+      item.uri === source ||
+      item.thumbnailUri === source,
+  );
+};
+
+const segmentsFromContent = ({
+  body,
+  content,
+  contentImageMap,
+  media,
+}: {
+  body?: string;
+  content?: MemoryRichTextDocument;
+  contentImageMap?: MemoryContentImageMap;
+  media?: MemoryMedia[];
+}): ComposerSegment[] => {
+  const segments: ComposerSegment[] = [];
+  const availableMedia = media ?? [];
+
+  content?.content?.forEach((node) => {
+    const source = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+    if (node.type === "image" && source) {
+      const item = mediaForContentImage(
+        source,
+        contentImageMap,
+        availableMedia,
+      );
+      segments.push({
+        id: createSegmentId("image"),
+        mediaId: item?.id ?? createSegmentId("media"),
+        type: "image",
+        uri: item?.uri ?? source,
+      });
+      return;
+    }
+
+    const text = nodeText(node).trimEnd();
+    if (text.length > 0) {
+      segments.push(textSegment(text));
+    }
+  });
+
+  if (segments.length === 0) {
+    segments.push(textSegment(body ?? ""));
+  }
+
+  const hasTextSegment = segments.some((segment) => segment.type === "text");
+  if (!hasTextSegment) {
+    segments.push(textSegment());
+  }
+
+  return segments;
+};
+
+const textNodesFromValue = (value: string): MemoryRichTextNode[] =>
+  value.split(/\r?\n/).map((line) => ({
+    content:
+      line.length > 0
+        ? [
+            {
+              text: line,
+              type: "text",
+            },
+          ]
+        : undefined,
+    type: "paragraph",
+  }));
+
+const contentFromSegments = (
+  segments: ComposerSegment[],
+): MemoryRichTextDocument => ({
+  content: segments.flatMap((segment) => {
+    if (segment.type === "image") {
+      return [
+        {
+          attrs: { src: segment.uri },
+          type: "image",
+        },
+      ];
+    }
+
+    return segment.text.trim().length > 0
+      ? textNodesFromValue(segment.text)
+      : [];
+  }),
+  type: "doc",
+});
+
+const contentImageMapFromSegments = (
+  segments: ComposerSegment[],
+): MemoryContentImageMap =>
+  Object.fromEntries(
+    segments
+      .filter(
+        (segment): segment is ComposerImageSegment => segment.type === "image",
+      )
+      .map((segment) => [segment.uri, segment.mediaId]),
+  );
+
+const inlineImageMediaIds = (segments: ComposerSegment[]) =>
+  new Set(
+    segments
+      .filter(
+        (segment): segment is ComposerImageSegment => segment.type === "image",
+      )
+      .map((segment) => segment.mediaId),
+  );
 
 export default function Compose() {
   const router = useRouter();
@@ -61,28 +248,178 @@ export default function Compose() {
     draftIdRef.current = draftIdParam ?? drafts.newDraftId();
   }
 
+  const initialSegments = useMemo(
+    () =>
+      segmentsFromContent({
+        body: existing?.body,
+        content: existing?.content,
+        contentImageMap: existing?.contentImageMap,
+        media: existing?.media,
+      }),
+    [
+      existing?.body,
+      existing?.content,
+      existing?.contentImageMap,
+      existing?.media,
+    ],
+  );
+  const [segments, setSegments] = useState<ComposerSegment[]>(
+    () => initialSegments,
+  );
+  const [activeSelection, setActiveSelection] = useState<TextSelection>(() => {
+    const firstText = initialSegments.find(
+      (segment): segment is ComposerTextSegment => segment.type === "text",
+    );
+
+    return {
+      end: firstText?.text.length ?? 0,
+      segmentId: firstText?.id ?? "",
+      start: firstText?.text.length ?? 0,
+    };
+  });
+  const [imageMenuOpen, setImageMenuOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const inputRefs = useRef<Record<string, TextInputHandle | null>>({});
+
   const {
     attachments,
-    body,
-    canSubmit,
     capture,
     isPicking,
     isRecording,
     pickFromLibrary,
     removeAttachment,
     reset,
-    setBody,
     toggleRecording,
-  } = useComposerDraft({ body: existing?.body, media: existing?.media });
+  } = useComposerDraft({ media: existing?.media });
+  const content = useMemo(() => contentFromSegments(segments), [segments]);
+  const contentImageMap = useMemo(
+    () => contentImageMapFromSegments(segments),
+    [segments],
+  );
+  const inlineMediaIds = useMemo(
+    () => inlineImageMediaIds(segments),
+    [segments],
+  );
+  const body = richTextPlainText(content).trim();
+  const visibleAttachments = useMemo(
+    () =>
+      attachments.filter((attachment) => !inlineMediaIds.has(attachment.id)),
+    [attachments, inlineMediaIds],
+  );
+  const inlineImageCount = inlineMediaIds.size;
+  const canSubmit =
+    !isSubmitting &&
+    (body.length > 0 || visibleAttachments.length > 0 || inlineImageCount > 0);
+
+  const focusTextSegment = useCallback((segmentId: string, cursor = 0) => {
+    requestAnimationFrame(() => {
+      const input = inputRefs.current[segmentId];
+      input?.focus();
+      input?.setNativeProps({
+        selection: { end: cursor, start: cursor },
+      });
+    });
+  }, []);
+
+  const updateTextSegment = useCallback((segmentId: string, text: string) => {
+    setSegments((current) =>
+      current.map((segment) =>
+        segment.id === segmentId && segment.type === "text"
+          ? { ...segment, text }
+          : segment,
+      ),
+    );
+  }, []);
+
+  const insertInlineImages = useCallback(
+    (pickedMedia: MemoryMedia[]) => {
+      const images = pickedMedia.filter((item) => item.kind === "image");
+      if (images.length === 0) {
+        return;
+      }
+
+      const imageSegments = images.map(imageSegment);
+      const nextText = textSegment();
+
+      setSegments((current) => {
+        const index = current.findIndex(
+          (segment) =>
+            segment.type === "text" && segment.id === activeSelection.segmentId,
+        );
+
+        if (index < 0) {
+          return [...current, ...imageSegments, nextText];
+        }
+
+        const selected = current[index] as ComposerTextSegment;
+        const start = Math.max(
+          0,
+          Math.min(selected.text.length, activeSelection.start),
+        );
+        const end = Math.max(
+          start,
+          Math.min(selected.text.length, activeSelection.end),
+        );
+        const before = selected.text.slice(0, start);
+        const after = selected.text.slice(end);
+        const replacement: ComposerSegment[] = [
+          ...(before.length > 0 ? [{ ...selected, text: before }] : []),
+          ...imageSegments,
+          { ...nextText, text: after },
+        ];
+
+        return [
+          ...current.slice(0, index),
+          ...replacement,
+          ...current.slice(index + 1),
+        ];
+      });
+
+      setActiveSelection({
+        end: 0,
+        segmentId: nextText.id,
+        start: 0,
+      });
+      focusTextSegment(nextText.id);
+    },
+    [activeSelection, focusTextSegment],
+  );
+
+  const pickInlineImages = useCallback(() => {
+    setImageMenuOpen(false);
+    pickFromLibrary().then(insertInlineImages);
+  }, [insertInlineImages, pickFromLibrary]);
+
+  const pickAttachmentMedia = useCallback(() => {
+    setImageMenuOpen(false);
+    pickFromLibrary();
+  }, [pickFromLibrary]);
+
+  const removeInlineImage = useCallback(
+    (segmentId: string, mediaId: string) => {
+      setSegments((current) => {
+        const next = current.filter((segment) => segment.id !== segmentId);
+        return next.some((segment) => segment.type === "text")
+          ? next
+          : [textSegment()];
+      });
+      removeAttachment(mediaId);
+    },
+    [removeAttachment],
+  );
 
   // Persist the in-progress draft when leaving without sending, so it can be
   // refined later. Empty drafts are discarded. Refs keep the unmount handler
   // pointed at the latest values without re-subscribing.
   const bodyRef = useRef(body);
+  const contentRef = useRef<MemoryRichTextDocument>(content);
+  const contentImageMapRef = useRef<MemoryContentImageMap>(contentImageMap);
   const mediaRef = useRef(attachments);
   const draftsRef = useRef(drafts);
   const submittedRef = useRef(false);
   bodyRef.current = body;
+  contentRef.current = content;
+  contentImageMapRef.current = contentImageMap;
   mediaRef.current = attachments;
   draftsRef.current = drafts;
 
@@ -92,12 +429,17 @@ export default function Compose() {
         return;
       }
       const id = draftIdRef.current;
+      const content = contentRef.current;
       const hasContent =
-        bodyRef.current.trim().length > 0 || mediaRef.current.length > 0;
+        bodyRef.current.trim().length > 0 ||
+        richTextImageSources(content).length > 0 ||
+        mediaRef.current.length > 0;
       if (hasContent) {
         draftsRef.current.save({
           id,
           body: bodyRef.current,
+          content,
+          contentImageMap: contentImageMapRef.current,
           media: mediaRef.current,
         });
       } else {
@@ -127,9 +469,16 @@ export default function Compose() {
       return;
     }
     tapFeedback();
+    setIsSubmitting(true);
+
     submittedRef.current = true;
     drafts.remove(draftIdRef.current);
-    sendMemory({ body, media: attachments });
+    sendMemory({
+      body,
+      content,
+      contentImageMap,
+      media: attachments,
+    });
     reset();
     router.back();
   };
@@ -186,19 +535,66 @@ export default function Compose() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <TextInput
-              autoFocus
-              multiline
-              onChangeText={setBody}
-              placeholder={`Write to ${family.childName}…`}
-              placeholderTextColor={palette.inkFaint}
-              style={styles.input}
-              value={body}
-            />
+            <View style={styles.editorShell}>
+              {segments.map((segment, index) =>
+                segment.type === "text" ? (
+                  <TextInput
+                    autoFocus={index === 0}
+                    key={segment.id}
+                    multiline
+                    onChangeText={(value) =>
+                      updateTextSegment(segment.id, value)
+                    }
+                    onFocus={() =>
+                      setActiveSelection({
+                        end: segment.text.length,
+                        segmentId: segment.id,
+                        start: segment.text.length,
+                      })
+                    }
+                    onSelectionChange={({ nativeEvent }) =>
+                      setActiveSelection({
+                        end: nativeEvent.selection.end,
+                        segmentId: segment.id,
+                        start: nativeEvent.selection.start,
+                      })
+                    }
+                    placeholder={
+                      body.length === 0 &&
+                      inlineImageCount === 0 &&
+                      segments.findIndex((item) => item.type === "text") ===
+                        index
+                        ? `Write to ${family.childName}…`
+                        : undefined
+                    }
+                    placeholderTextColor={palette.inkFaint}
+                    ref={(input) => {
+                      inputRefs.current[segment.id] = input;
+                    }}
+                    scrollEnabled={false}
+                    style={[
+                      styles.input,
+                      segment.text.length === 0 && index > 0
+                        ? styles.inputEmptyContinuation
+                        : null,
+                    ]}
+                    value={segment.text}
+                  />
+                ) : (
+                  <InlineImagePreview
+                    key={segment.id}
+                    onRemove={() =>
+                      removeInlineImage(segment.id, segment.mediaId)
+                    }
+                    uri={segment.uri}
+                  />
+                ),
+              )}
+            </View>
 
-            {attachments.length > 0 ? (
+            {visibleAttachments.length > 0 ? (
               <View style={styles.attachments}>
-                {attachments.map((attachment) => (
+                {visibleAttachments.map((attachment) => (
                   <AttachmentPreview
                     attachment={attachment}
                     key={attachment.id}
@@ -210,6 +606,30 @@ export default function Compose() {
           </ScrollView>
 
           <View style={styles.footer}>
+            {imageMenuOpen ? (
+              <View style={styles.insertMenu}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={pickInlineImages}
+                  style={({ pressed }) => [
+                    styles.insertMenuItem,
+                    pressed ? styles.pressed : null,
+                  ]}
+                >
+                  <Text style={styles.insertMenuText}>Inline</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={pickAttachmentMedia}
+                  style={({ pressed }) => [
+                    styles.insertMenuItem,
+                    pressed ? styles.pressed : null,
+                  ]}
+                >
+                  <Text style={styles.insertMenuText}>Attachment</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.tools}>
               <ToolButton
                 disabled={isPicking}
@@ -227,7 +647,7 @@ export default function Compose() {
                 disabled={isPicking}
                 icon={<ImageIcon color={palette.ink} size={21} />}
                 label="Choose from library"
-                onPress={pickFromLibrary}
+                onPress={() => setImageMenuOpen((open) => !open)}
               />
               <ToolButton
                 active={isRecording}
@@ -286,6 +706,33 @@ function ToolButton({
     >
       {icon}
     </Pressable>
+  );
+}
+
+function InlineImagePreview({
+  onRemove,
+  uri,
+}: {
+  onRemove: () => void;
+  uri: string;
+}) {
+  return (
+    <View style={styles.inlineImage}>
+      <Image
+        resizeMode="cover"
+        source={{ uri }}
+        style={styles.inlineImageMedia as ImageStyle}
+      />
+      <Pressable
+        accessibilityLabel="Remove inline image"
+        accessibilityRole="button"
+        hitSlop={8}
+        onPress={onRemove}
+        style={styles.inlineImageRemove}
+      >
+        <Trash2 color="#fff" size={14} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -382,13 +829,44 @@ const styles = StyleSheet.create({
     paddingHorizontal: 22,
     paddingTop: 8,
   },
+  editorShell: {
+    minHeight: 220,
+    paddingHorizontal: 0,
+    paddingVertical: 12,
+  },
   input: {
     color: palette.ink,
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: "600",
-    lineHeight: 30,
-    minHeight: 120,
+    lineHeight: 25,
+    minHeight: 46,
     padding: 0,
+  },
+  inputEmptyContinuation: {
+    minHeight: 38,
+  },
+  inlineImage: {
+    aspectRatio: 4 / 3,
+    backgroundColor: palette.surface,
+    borderRadius: radius.medium,
+    marginVertical: 8,
+    overflow: "hidden",
+    width: "100%",
+  },
+  inlineImageMedia: {
+    height: "100%",
+    width: "100%",
+  },
+  inlineImageRemove: {
+    alignItems: "center",
+    backgroundColor: "rgba(31,28,24,0.66)",
+    borderRadius: radius.pill,
+    height: 28,
+    justifyContent: "center",
+    position: "absolute",
+    right: 8,
+    top: 8,
+    width: 28,
   },
   attachments: {
     flexDirection: "row",
@@ -428,6 +906,30 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
     paddingHorizontal: 22,
     paddingTop: 12,
+  },
+  insertMenu: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255,255,255,0.82)",
+    borderColor: "rgba(74,64,51,0.08)",
+    borderRadius: radius.medium,
+    borderWidth: 1,
+    flexDirection: "row",
+    gap: 8,
+    padding: 6,
+    ...shadow.soft,
+  },
+  insertMenuItem: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.62)",
+    borderRadius: radius.small,
+    justifyContent: "center",
+    minHeight: 38,
+    paddingHorizontal: 14,
+  },
+  insertMenuText: {
+    color: palette.ink,
+    fontSize: 14,
+    fontWeight: "800",
   },
   tools: {
     flexDirection: "row",

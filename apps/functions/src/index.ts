@@ -2,6 +2,7 @@ import { mkdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { createElement, type ReactNode } from "react";
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
@@ -12,6 +13,20 @@ import {
   onDocumentWritten,
 } from "firebase-functions/v2/firestore";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
+import {
+  Body,
+  Container,
+  Head,
+  Heading,
+  Hr,
+  Html,
+  Img,
+  Link,
+  Preview,
+  Section,
+  Text,
+  render,
+} from "react-email";
 import sharp from "sharp";
 
 initializeApp();
@@ -84,9 +99,29 @@ type MemoryMedia = {
   height?: unknown;
 };
 
+type MemoryRichTextMark = {
+  type?: unknown;
+  attrs?: unknown;
+};
+
+type MemoryRichTextNode = {
+  type?: unknown;
+  attrs?: unknown;
+  content?: unknown;
+  marks?: unknown;
+  text?: unknown;
+};
+
+type MemoryRichTextDocument = {
+  type?: unknown;
+  content?: unknown;
+};
+
 type MemoryPost = {
   authorId?: unknown;
   body?: unknown;
+  content?: unknown;
+  contentImageMap?: unknown;
   createdAt?: unknown;
   deliveredAt?: unknown;
   errorMessage?: unknown;
@@ -102,6 +137,24 @@ type DeliveredDriveFile = {
   name: string;
   webContentLink?: string;
   webViewLink?: string;
+};
+
+type UploadedDriveFile = DeliveredDriveFile & {
+  content: Buffer;
+  mediaKind?: string;
+  mimeType: string;
+};
+
+type EmailLinkedFile = DeliveredDriveFile & {
+  mediaKind?: string;
+};
+
+type InlineEmailImage = {
+  cid: string;
+  content: Buffer;
+  fileName: string;
+  mediaId: string;
+  mimeType: string;
 };
 
 type StoragePathParts = {
@@ -147,7 +200,10 @@ const isDeliveryReadyStatus = (status: unknown) =>
   status === "synced" || status === "stored";
 
 const isNonEmptyPost = (post: MemoryPost) =>
-  optionalString(post.body) || normalizePostMedia(post.media).length > 0;
+  optionalString(post.body) ||
+  richTextPlainText(normalizeRichTextDocument(post.content)) ||
+  richTextImageSources(normalizeRichTextDocument(post.content)).length > 0 ||
+  normalizePostMedia(post.media).length > 0;
 
 const normalizePostMedia = (value: unknown): MemoryMedia[] =>
   Array.isArray(value) ? (value as MemoryMedia[]) : [];
@@ -164,6 +220,15 @@ const base64UrlEncode = (value: string) =>
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+
+const base64MimeEncode = (value: Buffer) =>
+  value
+    .toString("base64")
+    .replace(/.{1,76}/g, (line) => `${line}\r\n`)
+    .trimEnd();
+
+const contentTypeBoundary = (prefix: string) =>
+  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 
 const fileNameFromStoragePath = (storagePath: string) =>
   storagePath.split("/").filter(Boolean).at(-1) ?? "memory";
@@ -184,7 +249,91 @@ const fileNameFromMedia = (media: MemoryMedia, index: number) => {
 
   const kind = optionalString(media.kind) ?? "file";
   const mediaId = optionalString(media.id) ?? String(index + 1);
-  return `may-${kind}-${mediaId}`;
+  return `memory-${kind}-${mediaId}`;
+};
+
+const normalizeRichTextNode = (value: unknown): MemoryRichTextNode | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const node = value as MemoryRichTextNode;
+  return typeof node.type === "string" ? node : null;
+};
+
+const normalizeRichTextChildren = (value: unknown): MemoryRichTextNode[] =>
+  Array.isArray(value)
+    ? value
+        .map(normalizeRichTextNode)
+        .filter((node): node is MemoryRichTextNode => Boolean(node))
+    : [];
+
+const normalizeRichTextDocument = (
+  value: unknown,
+): MemoryRichTextDocument | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const document = value as MemoryRichTextDocument;
+  return document.type === "doc" ? document : undefined;
+};
+
+const normalizeContentImageMap = (value: unknown) =>
+  value && typeof value === "object"
+    ? Object.fromEntries(
+        Object.entries(value).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      )
+    : {};
+
+const richTextImageSources = (content?: MemoryRichTextDocument): string[] => {
+  const sources: string[] = [];
+
+  const visit = (node: MemoryRichTextNode) => {
+    const attrs =
+      node.attrs && typeof node.attrs === "object" ? node.attrs : {};
+    const source =
+      "src" in attrs && typeof attrs.src === "string" ? attrs.src : "";
+    if (node.type === "image" && source) {
+      sources.push(source);
+    }
+    normalizeRichTextChildren(node.content).forEach(visit);
+  };
+
+  normalizeRichTextChildren(content?.content).forEach(visit);
+  return sources;
+};
+
+const richTextPlainText = (content?: MemoryRichTextDocument) => {
+  const visit = (node: MemoryRichTextNode): string => {
+    if (typeof node.text === "string") {
+      return node.text;
+    }
+
+    const children = normalizeRichTextChildren(node.content)
+      .map(visit)
+      .join("");
+
+    switch (node.type) {
+      case "hardBreak":
+        return "\n";
+      case "paragraph":
+      case "heading":
+      case "blockquote":
+        return children ? `${children}\n` : "\n";
+      case "bulletList":
+      case "orderedList":
+        return children ? `${children}\n` : "";
+      case "image":
+        return "";
+      default:
+        return children;
+    }
+  };
+
+  return normalizeRichTextChildren(content?.content).map(visit).join("").trim();
 };
 
 const assertGoogleJsonResponse = async <T extends { error?: unknown }>(
@@ -325,34 +474,436 @@ const markGoogleDeliveryNeedsReconnect = async ({
   );
 };
 
+const emailStyles = {
+  body: {
+    backgroundColor: "#f5efe8",
+    color: "#252d2b",
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    margin: "0",
+    padding: "28px 12px 36px",
+  },
+  container: {
+    backgroundColor: "#ffffff",
+    border: "1px solid rgba(37,45,43,0.06)",
+    borderRadius: "24px",
+    margin: "0 auto",
+    maxWidth: "560px",
+    overflow: "hidden",
+  },
+  header: {
+    alignItems: "center",
+    display: "flex",
+    padding: "20px 20px 10px",
+  },
+  avatar: {
+    backgroundColor: "#252d2b",
+    borderRadius: "999px",
+    color: "#ffffff",
+    display: "inline-block",
+    fontSize: "16px",
+    fontWeight: "800",
+    height: "42px",
+    lineHeight: "42px",
+    marginRight: "12px",
+    textAlign: "center" as const,
+    width: "42px",
+  },
+  authorBlock: {
+    display: "inline-block",
+    verticalAlign: "middle",
+  },
+  author: {
+    color: "#252d2b",
+    fontSize: "16px",
+    fontWeight: "800",
+    lineHeight: "20px",
+    margin: "0",
+  },
+  letter: {
+    padding: "8px 20px 22px",
+  },
+  paragraph: {
+    color: "#252d2b",
+    fontSize: "15px",
+    fontWeight: "600",
+    lineHeight: "22px",
+    margin: "0 0 18px",
+  },
+  heading: {
+    color: "#252d2b",
+    fontSize: "19px",
+    fontWeight: "800",
+    lineHeight: "25px",
+    margin: "8px 0 14px",
+  },
+  quote: {
+    borderLeft: "3px solid #9db9a5",
+    margin: "0 0 16px",
+    paddingLeft: "14px",
+  },
+  list: {
+    color: "#252d2b",
+    fontSize: "16px",
+    lineHeight: "25px",
+    margin: "0 0 16px",
+    paddingLeft: "22px",
+  },
+  image: {
+    borderRadius: "16px",
+    display: "block",
+    height: "auto",
+    margin: "10px 0 20px",
+    maxWidth: "100%",
+    width: "100%",
+  },
+  link: {
+    color: "#5b7e66",
+  },
+  files: {
+    borderTop: "1px solid rgba(37,45,43,0.08)",
+    marginTop: "4px",
+    paddingTop: "14px",
+  },
+  fileText: {
+    color: "rgba(37,45,43,0.72)",
+    fontSize: "14px",
+    lineHeight: "21px",
+    margin: "0 0 8px",
+  },
+  rule: {
+    borderColor: "#eadfd2",
+    margin: "18px 0",
+  },
+} as const;
+
+const h = createElement;
+
+const authorInitial = (authorName: string) =>
+  authorName.trim().charAt(0).toUpperCase() || "?";
+
+const friendlyFileLabel = (file: EmailLinkedFile, index: number) => {
+  switch (file.mediaKind) {
+    case "image":
+      return `Photo ${index + 1}`;
+    case "video":
+      return `Video ${index + 1}`;
+    case "audio":
+      return `Voice note ${index + 1}`;
+    default:
+      return `Attachment ${index + 1}`;
+  }
+};
+
+const contentImageMediaIds = ({
+  content,
+  contentImageMap,
+  media,
+}: {
+  content?: MemoryRichTextDocument;
+  contentImageMap: Record<string, string>;
+  media: MemoryMedia[];
+}) =>
+  new Set(
+    richTextImageSources(content)
+      .map((source) => {
+        const mapped = contentImageMap[source];
+        if (mapped) {
+          return mapped;
+        }
+
+        const item = media.find(
+          (mediaItem) =>
+            optionalString(mediaItem.kind) === "image" &&
+            (optionalString(mediaItem.uri) === source ||
+              optionalString(mediaItem.thumbnailUri) === source),
+        );
+        return optionalString(item?.id);
+      })
+      .filter((id): id is string => Boolean(id)),
+  );
+
+const isMarkType = (mark: MemoryRichTextMark, type: string) =>
+  mark.type === type;
+
+const nodeAttrs = (node: MemoryRichTextNode) =>
+  node.attrs && typeof node.attrs === "object"
+    ? (node.attrs as Record<string, unknown>)
+    : {};
+
+const nodeMarks = (node: MemoryRichTextNode): MemoryRichTextMark[] =>
+  Array.isArray(node.marks)
+    ? node.marks.filter((mark): mark is MemoryRichTextMark =>
+        Boolean(mark && typeof mark === "object"),
+      )
+    : [];
+
+const renderInlineEmailNodes = (
+  nodes: MemoryRichTextNode[] = [],
+): ReactNode[] =>
+  nodes.flatMap((node, index): ReactNode[] => {
+    if (node.type === "hardBreak") {
+      return [h("br", { key: index })];
+    }
+    if (node.type !== "text") {
+      return renderInlineEmailNodes(normalizeRichTextChildren(node.content));
+    }
+
+    const marks = nodeMarks(node);
+    let child: ReactNode = String(node.text ?? "");
+
+    if (marks.some((mark) => isMarkType(mark, "code"))) {
+      child = h(
+        "code",
+        {
+          key: `${index}-code`,
+          style: {
+            backgroundColor: "rgba(37,45,43,0.08)",
+            borderRadius: "4px",
+            padding: "1px 4px",
+          },
+        },
+        child,
+      );
+    }
+    if (marks.some((mark) => isMarkType(mark, "bold"))) {
+      child = h("strong", { key: `${index}-bold` }, child);
+    }
+    if (marks.some((mark) => isMarkType(mark, "italic"))) {
+      child = h("em", { key: `${index}-italic` }, child);
+    }
+    if (marks.some((mark) => isMarkType(mark, "strike"))) {
+      child = h("s", { key: `${index}-strike` }, child);
+    }
+
+    const link = marks.find((mark) => isMarkType(mark, "link"));
+    const linkAttrs =
+      link?.attrs && typeof link.attrs === "object"
+        ? (link.attrs as Record<string, unknown>)
+        : {};
+    const href = typeof linkAttrs.href === "string" ? linkAttrs.href : "";
+    if (href) {
+      child = h(
+        Link,
+        { href, key: `${index}-link`, style: emailStyles.link },
+        child,
+      );
+    }
+
+    return [h("span", { key: index }, child)];
+  });
+
+const renderEmailNode = ({
+  contentImageMap,
+  inlineImagesByMediaId,
+  node,
+}: {
+  contentImageMap: Record<string, string>;
+  inlineImagesByMediaId: Map<string, InlineEmailImage>;
+  node: MemoryRichTextNode;
+}): ReactNode => {
+  const children = normalizeRichTextChildren(node.content);
+
+  switch (node.type) {
+    case "heading":
+      return h(
+        Heading,
+        { as: "h2", style: emailStyles.heading },
+        renderInlineEmailNodes(children),
+      );
+    case "paragraph":
+      return h(
+        Text,
+        { style: emailStyles.paragraph },
+        renderInlineEmailNodes(children),
+      );
+    case "blockquote":
+      return h(
+        Section,
+        { style: emailStyles.quote },
+        children.map((child, index) =>
+          h(
+            "div",
+            { key: index },
+            renderEmailNode({
+              contentImageMap,
+              inlineImagesByMediaId,
+              node: child,
+            }),
+          ),
+        ),
+      );
+    case "bulletList":
+    case "orderedList": {
+      const tag = node.type === "orderedList" ? "ol" : "ul";
+      return h(
+        tag,
+        { style: emailStyles.list },
+        children.map((child, index) =>
+          h(
+            "li",
+            { key: index },
+            normalizeRichTextChildren(child.content).map(
+              (grandchild, childIndex) =>
+                h(
+                  "div",
+                  { key: childIndex },
+                  renderEmailNode({
+                    contentImageMap,
+                    inlineImagesByMediaId,
+                    node: grandchild,
+                  }),
+                ),
+            ),
+          ),
+        ),
+      );
+    }
+    case "horizontalRule":
+      return h(Hr, { style: emailStyles.rule });
+    case "image": {
+      const source = String(nodeAttrs(node).src ?? "");
+      const mediaId = contentImageMap[source];
+      const inline = mediaId ? inlineImagesByMediaId.get(mediaId) : undefined;
+      if (!source && !inline) {
+        return null;
+      }
+      return h(Img, {
+        alt: "",
+        src: inline ? `cid:${inline.cid}` : source,
+        style: emailStyles.image,
+      });
+    }
+    default:
+      return children.map((child, index) =>
+        h(
+          "div",
+          { key: index },
+          renderEmailNode({
+            contentImageMap,
+            inlineImagesByMediaId,
+            node: child,
+          }),
+        ),
+      );
+  }
+};
+
 const buildMemoryEmailText = ({
-  authorName,
-  childName,
-  driveFiles,
+  content,
+  linkedFiles,
   post,
 }: {
-  authorName: string;
-  childName: string;
-  driveFiles: DeliveredDriveFile[];
+  content?: MemoryRichTextDocument;
+  linkedFiles: EmailLinkedFile[];
   post: MemoryPost;
 }) => {
-  const lines = [
-    `${authorName} sent a memory for ${childName}.`,
-    "",
-    optionalString(post.body) ?? "",
-  ].filter((line, index) => index < 2 || line.length > 0);
+  const body = richTextPlainText(content) || optionalString(post.body) || "";
+  const lines = body.length > 0 ? [body] : [];
 
-  if (driveFiles.length > 0) {
-    lines.push("", "Files:");
-    driveFiles.forEach((file, index) => {
+  if (linkedFiles.length > 0) {
+    lines.push("", "Attachments:");
+    linkedFiles.forEach((file, index) => {
       lines.push(
-        `${index + 1}. ${file.name}: ${file.webViewLink ?? file.webContentLink ?? `https://drive.google.com/file/d/${file.id}/view`}`,
+        `${friendlyFileLabel(file, index)}: ${file.webViewLink ?? file.webContentLink ?? `https://drive.google.com/file/d/${file.id}/view`}`,
       );
     });
   }
 
-  lines.push("", "Sent by May.");
   return lines.join("\n");
+};
+
+const buildMemoryEmailHtml = async ({
+  authorName,
+  content,
+  contentImageMap,
+  inlineImages,
+  linkedFiles,
+  post,
+}: {
+  authorName: string;
+  content?: MemoryRichTextDocument;
+  contentImageMap: Record<string, string>;
+  inlineImages: InlineEmailImage[];
+  linkedFiles: EmailLinkedFile[];
+  post: MemoryPost;
+}) => {
+  const inlineImagesByMediaId = new Map(
+    inlineImages.map((image) => [image.mediaId, image]),
+  );
+  const bodyText =
+    richTextPlainText(content) || optionalString(post.body) || "";
+  const contentNodes = normalizeRichTextChildren(content?.content);
+  const bodyNodes =
+    contentNodes.length > 0
+      ? contentNodes.map((node, index) =>
+          h(
+            "div",
+            { key: index },
+            renderEmailNode({ contentImageMap, inlineImagesByMediaId, node }),
+          ),
+        )
+      : bodyText
+          .split(/\n{2,}/)
+          .filter(Boolean)
+          .map((paragraph, index) =>
+            h(Text, { key: index, style: emailStyles.paragraph }, paragraph),
+          );
+
+  const template = h(
+    Html,
+    { lang: "en" },
+    h(Head),
+    h(Preview, null, bodyText.trim()),
+    h(
+      Body,
+      { style: emailStyles.body },
+      h(
+        Container,
+        { style: emailStyles.container },
+        h(
+          Section,
+          { style: emailStyles.header },
+          h("span", { style: emailStyles.avatar }, authorInitial(authorName)),
+          h(
+            "span",
+            { style: emailStyles.authorBlock },
+            h(Text, { style: emailStyles.author }, authorName),
+          ),
+        ),
+        h(
+          Section,
+          { style: emailStyles.letter },
+          bodyNodes,
+          linkedFiles.length > 0
+            ? h(
+                Section,
+                { style: emailStyles.files },
+                h(Text, { style: emailStyles.fileText }, "Attachments"),
+                linkedFiles.map((file, index) =>
+                  h(
+                    Text,
+                    { key: file.id, style: emailStyles.fileText },
+                    h(
+                      Link,
+                      {
+                        href:
+                          file.webViewLink ??
+                          file.webContentLink ??
+                          `https://drive.google.com/file/d/${file.id}/view`,
+                        style: emailStyles.link,
+                      },
+                      friendlyFileLabel(file, index),
+                    ),
+                  ),
+                ),
+              )
+            : null,
+        ),
+      ),
+    ),
+  );
+
+  return render(template);
 };
 
 const sendMemoryEmail = async ({
@@ -368,28 +919,60 @@ const sendMemoryEmail = async ({
   authorName: string;
   childEmail: string;
   childName: string;
-  driveFiles: DeliveredDriveFile[];
+  driveFiles: UploadedDriveFile[];
   fromEmail: string;
   post: MemoryPost;
 }) => {
-  const subject = `New memory for ${childName}`;
+  const subject = `A memory for ${childName}`;
+  const content = normalizeRichTextDocument(post.content);
+  const contentImageMap = normalizeContentImageMap(post.contentImageMap);
+  const inlineMediaIds = contentImageMediaIds({
+    content,
+    contentImageMap,
+    media: normalizePostMedia(post.media),
+  });
+  const inlineImages: InlineEmailImage[] = driveFiles
+    .filter(
+      (file) =>
+        inlineMediaIds.has(file.mediaId) &&
+        file.mediaKind === "image" &&
+        file.mimeType.startsWith("image/"),
+    )
+    .map((file) => ({
+      cid: `${file.mediaId.replace(/[^a-zA-Z0-9_.-]/g, "") || "image"}@memory`,
+      content: file.content,
+      fileName: file.name,
+      mediaId: file.mediaId,
+      mimeType: file.mimeType,
+    }));
+  const publicDriveFiles = driveFiles.map(
+    ({ content: _content, mimeType: _mimeType, ...file }) => file,
+  );
+  const linkedFiles = publicDriveFiles.filter(
+    (file) => !inlineMediaIds.has(file.mediaId),
+  );
   const text = buildMemoryEmailText({
-    authorName,
-    childName,
-    driveFiles,
+    content,
+    linkedFiles,
     post,
   });
-  const rawMessage = [
-    `From: ${encodeHeader("May")} <${sanitizeHeaderValue(fromEmail)}>`,
-    `To: ${sanitizeHeaderValue(childEmail)}`,
-    `Subject: ${encodeHeader(subject)}`,
-    `Date: ${new Date().toUTCString()}`,
-    "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: 8bit",
-    "",
+  const html = await buildMemoryEmailHtml({
+    authorName,
+    content,
+    contentImageMap,
+    inlineImages,
+    linkedFiles,
+    post,
+  });
+  const rawMessage = buildGmailMimeMessage({
+    childEmail,
+    fromEmail,
+    fromName: authorName,
+    html,
+    inlineImages,
+    subject,
     text,
-  ].join("\r\n");
+  });
 
   const response = await fetch(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
@@ -411,6 +994,64 @@ const sendMemoryEmail = async ({
   );
 };
 
+const buildGmailMimeMessage = ({
+  childEmail,
+  fromEmail,
+  fromName,
+  html,
+  inlineImages,
+  subject,
+  text,
+}: {
+  childEmail: string;
+  fromEmail: string;
+  fromName: string;
+  html: string;
+  inlineImages: InlineEmailImage[];
+  subject: string;
+  text: string;
+}) => {
+  const alternativeBoundary = contentTypeBoundary("alt");
+  const relatedBoundary = contentTypeBoundary("related");
+  const relatedParts = [
+    `--${relatedBoundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    html,
+    ...inlineImages.flatMap((image) => [
+      `--${relatedBoundary}`,
+      `Content-Type: ${sanitizeHeaderValue(image.mimeType)}; name="${sanitizeHeaderValue(image.fileName)}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-ID: <${sanitizeHeaderValue(image.cid)}>`,
+      `Content-Disposition: inline; filename="${sanitizeHeaderValue(image.fileName)}"`,
+      "",
+      base64MimeEncode(image.content),
+    ]),
+    `--${relatedBoundary}--`,
+  ];
+
+  return [
+    `From: ${encodeHeader(fromName)} <${sanitizeHeaderValue(fromEmail)}>`,
+    `To: ${sanitizeHeaderValue(childEmail)}`,
+    `Subject: ${encodeHeader(subject)}`,
+    `Date: ${new Date().toUTCString()}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
+    "",
+    `--${alternativeBoundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    text,
+    `--${alternativeBoundary}`,
+    `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+    "",
+    ...relatedParts,
+    `--${alternativeBoundary}--`,
+  ].join("\r\n");
+};
+
 const uploadMediaToDrive = async ({
   accessToken,
   familyId,
@@ -423,7 +1064,7 @@ const uploadMediaToDrive = async ({
   index: number;
   media: MemoryMedia;
   postId: string;
-}): Promise<DeliveredDriveFile> => {
+}): Promise<UploadedDriveFile> => {
   const storagePath = requireString(media.storagePath, "media.storagePath");
   const bucket = getStorage().bucket();
   const file = bucket.file(storagePath);
@@ -443,7 +1084,7 @@ const uploadMediaToDrive = async ({
           familyId,
           mediaId: optionalString(media.id) ?? "",
           postId,
-          source: "may",
+          source: "memory",
         },
         name,
       }),
@@ -470,7 +1111,7 @@ const uploadMediaToDrive = async ({
   }
 
   const uploadResponse = await fetch(uploadUrl, {
-    body: buffer,
+    body: buffer as unknown as BodyInit,
     headers: {
       "Content-Length": String(buffer.length),
       "Content-Type": mimeType,
@@ -485,8 +1126,11 @@ const uploadMediaToDrive = async ({
   const fileId = requireString(driveFile.id, "driveFile.id");
 
   return {
+    content: buffer,
     id: fileId,
     mediaId: optionalString(media.id) ?? String(index + 1),
+    mediaKind: optionalString(media.kind),
+    mimeType,
     name: optionalString(driveFile.name) ?? name,
     webContentLink: optionalString(driveFile.webContentLink),
     webViewLink: optionalString(driveFile.webViewLink),
@@ -563,7 +1207,7 @@ const deliverMemoryPost = async ({
   );
   const accessToken = await refreshGoogleAccessToken(refreshToken);
   const media = normalizePostMedia(post.media);
-  const driveFiles = [];
+  const driveFiles: UploadedDriveFile[] = [];
 
   for (const [index, item] of media.entries()) {
     const driveFile = await uploadMediaToDrive({
@@ -597,8 +1241,17 @@ const deliverMemoryPost = async ({
     post,
   });
 
+  const deliveredDriveFiles = driveFiles.map(
+    ({
+      content: _content,
+      mediaKind: _mediaKind,
+      mimeType: _mimeType,
+      ...file
+    }) => file,
+  );
+
   return {
-    driveFiles,
+    driveFiles: deliveredDriveFiles,
     gmailMessageId: optionalString(gmailMessage.id),
     gmailThreadId: optionalString(gmailMessage.threadId),
   };

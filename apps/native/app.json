@@ -1,5 +1,10 @@
 {
   "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "7a7a9b53-58b0-4d92-8499-a0559eeff350"
+      }
+    },
     "name": "May",
     "slug": "may",
     "version": "1.0.0",

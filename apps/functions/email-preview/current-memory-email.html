@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Current Memory Email Preview</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+      }
+
+      body {
+        background-color: #f5efe8;
+        color: #252d2b;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        padding: 28px 12px 36px;
+      }
+
+      .container {
+        background-color: #ffffff;
+        border: 1px solid rgba(37, 45, 43, 0.06);
+        border-radius: 24px;
+        margin: 0 auto;
+        max-width: 560px;
+        overflow: hidden;
+      }
+
+      .header {
+        align-items: center;
+        display: flex;
+        padding: 20px 20px 10px;
+      }
+
+      .avatar {
+        background-color: #252d2b;
+        border-radius: 999px;
+        color: #ffffff;
+        display: inline-block;
+        font-size: 16px;
+        font-weight: 800;
+        height: 42px;
+        line-height: 42px;
+        margin-right: 12px;
+        text-align: center;
+        width: 42px;
+      }
+
+      .author-block {
+        display: inline-block;
+        vertical-align: middle;
+      }
+
+      .author {
+        color: #252d2b;
+        font-size: 16px;
+        font-weight: 800;
+        line-height: 20px;
+        margin: 0;
+      }
+
+      .letter {
+        padding: 8px 20px 22px;
+      }
+
+      .paragraph {
+        color: #252d2b;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 22px;
+        margin: 0 0 18px;
+      }
+
+      .image {
+        border-radius: 16px;
+        display: block;
+        height: auto;
+        margin: 10px 0 20px;
+        max-width: 100%;
+        width: 100%;
+      }
+
+      .link {
+        color: #5b7e66;
+      }
+
+      .files {
+        border-top: 1px solid rgba(37, 45, 43, 0.08);
+        margin-top: 4px;
+        padding-top: 14px;
+      }
+
+      .file-text {
+        color: rgba(37, 45, 43, 0.72);
+        font-size: 14px;
+        line-height: 21px;
+        margin: 0 0 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div style="display: none; max-height: 0; overflow: hidden">
+      We found the first strawberries tucked under the leaves this morning.
+    </div>
+
+    <div class="container">
+      <div class="header">
+        <span class="avatar">M</span>
+        <div class="author-block">
+          <p class="author">Maya</p>
+        </div>
+      </div>
+
+      <div class="letter">
+        <p class="paragraph">
+          We found the first strawberries tucked under the leaves this morning.
+          You insisted on carrying the basket yourself and counted every berry
+          before breakfast.
+        </p>
+
+        <p class="paragraph">
+          You said, "these are for later," then ate three before we made it back
+          to the kitchen. You asked me to save the heart-shaped one, so I took a
+          photo before we put it on your plate.
+        </p>
+
+        <img
+          alt=""
+          class="image"
+          src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1120 720'%3E%3Cdefs%3E%3ClinearGradient id='sky' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%23eadfd2'/%3E%3Cstop offset='0.52' stop-color='%23d9e3d4'/%3E%3Cstop offset='1' stop-color='%239db9a5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='1120' height='720' fill='url(%23sky)'/%3E%3Ccircle cx='910' cy='150' r='82' fill='%23fff5df' opacity='0.9'/%3E%3Cpath d='M0 500c128-64 234-84 360-30 114 50 226 46 340 6 160-56 284-26 420 54v190H0z' fill='%235b7e66' opacity='0.84'/%3E%3Cpath d='M0 572c166-56 310-56 474 8 150 58 316 48 646-34v174H0z' fill='%23252d2b' opacity='0.16'/%3E%3Crect x='112' y='96' width='380' height='438' rx='30' fill='%23ffffff' opacity='0.78'/%3E%3Cpath d='M150 443c82-86 135-105 212-56 28 18 54 15 91-12v106H150z' fill='%239db9a5'/%3E%3Ccircle cx='234' cy='212' r='62' fill='%23f5efe8'/%3E%3Cpath d='M619 198c38-34 84-34 122 0 38-34 84-34 122 0 42 38 33 103-17 147L741 438 636 345c-50-44-59-109-17-147z' fill='%23ffffff' opacity='0.72'/%3E%3C/svg%3E"
+        />
+
+        <p class="paragraph">
+          I tucked the little heart-shaped berry photo into Drive too, so it
+          can stay with this memory.
+        </p>
+
+        <div class="files">
+          <p class="file-text">Attachments</p>
+          <p class="file-text">
+            <a class="link" href="https://drive.google.com/file/d/photo/view">
+              Photo 1
+            </a>
+          </p>
+          <p class="file-text">
+            <a class="link" href="https://drive.google.com/file/d/audio/view">
+              Voice note 2
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

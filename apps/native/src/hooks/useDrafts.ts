@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { createId, type MemoryMedia } from "@may/core";
+import {
+  createId,
+  type MemoryContentImageMap,
+  type MemoryMedia,
+  type MemoryRichTextDocument,
+} from "@may/core";
 
 import { getLocalString, setLocalString } from "../services/storage";
 
@@ -11,6 +16,8 @@ import { getLocalString, setLocalString } from "../services/storage";
 export type MemoryDraft = {
   id: string;
   body: string;
+  content?: MemoryRichTextDocument;
+  contentImageMap?: MemoryContentImageMap;
   media: MemoryMedia[];
   updatedAt: string;
 };
@@ -18,6 +25,8 @@ export type MemoryDraft = {
 export type DraftInput = {
   id: string;
   body: string;
+  content?: MemoryRichTextDocument;
+  contentImageMap?: MemoryContentImageMap;
   media: MemoryMedia[];
 };
 
@@ -68,10 +77,12 @@ export const useDrafts = (familyId: string): DraftsApi => {
   );
 
   const save = useCallback(
-    ({ id, body, media }: DraftInput) => {
+    ({ id, body, content, contentImageMap, media }: DraftInput) => {
       const draft: MemoryDraft = {
         id,
         body,
+        content,
+        contentImageMap,
         media,
         updatedAt: new Date().toISOString(),
       };

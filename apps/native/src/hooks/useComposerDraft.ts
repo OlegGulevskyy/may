@@ -55,18 +55,19 @@ export function useComposerDraft(initial?: {
     async (asset: ImagePicker.ImagePickerAsset, kind: MemoryMediaKind) => {
       const persisted = await persistPickedAsset(asset, kind);
       setAttachments((current) => [...current, persisted]);
+      return persisted;
     },
     [],
   );
 
   const capture = useCallback(
-    async (kind: "image" | "video") => {
+    async (kind: "image" | "video"): Promise<MemoryMedia[]> => {
       try {
         setIsPicking(true);
         const permission = await ImagePicker.requestCameraPermissionsAsync();
         if (!permission.granted) {
           Alert.alert("Camera permission", "Camera access is needed first.");
-          return;
+          return [];
         }
         const result = await ImagePicker.launchCameraAsync({
           mediaTypes: [kind === "image" ? "images" : "videos"],
@@ -77,25 +78,26 @@ export function useComposerDraft(initial?: {
           videoMaxDuration: 90,
         });
         if (!result.canceled && result.assets[0]) {
-          await addPickedAsset(result.assets[0], kind);
+          return [await addPickedAsset(result.assets[0], kind)];
         }
       } catch (error) {
         Alert.alert("Capture failed", getErrorMessage(error));
       } finally {
         setIsPicking(false);
       }
+      return [];
     },
     [addPickedAsset],
   );
 
-  const pickFromLibrary = useCallback(async () => {
+  const pickFromLibrary = useCallback(async (): Promise<MemoryMedia[]> => {
     try {
       setIsPicking(true);
       const permission =
         await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
         Alert.alert("Photo permission", "Library access is needed first.");
-        return;
+        return [];
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         allowsMultipleSelection: true,
@@ -115,12 +117,14 @@ export function useComposerDraft(initial?: {
           ),
         );
         setAttachments((current) => [...current, ...next]);
+        return next;
       }
     } catch (error) {
       Alert.alert("Picker failed", getErrorMessage(error));
     } finally {
       setIsPicking(false);
     }
+    return [];
   }, []);
 
   const toggleRecording = useCallback(async () => {

@@ -18,10 +18,14 @@ import {
 
 import type {
   MemoryComment,
+  MemoryContentImageMap,
   MemoryDeliveryStatus,
   MemoryMedia,
   MemoryPost,
+  MemoryRichTextDocument,
+  MemoryRichTextNode,
 } from "@may/core";
+import { isMemoryRichTextDocument } from "@may/core";
 
 import { getFirebaseServices } from "./firebase";
 
@@ -79,6 +83,15 @@ const normalizeComments = (value: unknown): MemoryComment[] =>
 const normalizeReactions = (value: unknown): MemoryPost["reactions"] =>
   value && typeof value === "object" ? (value as MemoryPost["reactions"]) : {};
 
+const normalizeContentImageMap = (value: unknown): MemoryContentImageMap =>
+  value && typeof value === "object"
+    ? Object.fromEntries(
+        Object.entries(value).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      )
+    : {};
+
 const normalizeStatus = (value: unknown): MemoryDeliveryStatus =>
   typeof value === "string" &&
   [
@@ -120,6 +133,8 @@ const toMemoryPost = (
     familyId: String(data.familyId ?? familyId),
     authorId: String(data.authorId ?? ""),
     body: String(data.body ?? ""),
+    content: isMemoryRichTextDocument(data.content) ? data.content : undefined,
+    contentImageMap: normalizeContentImageMap(data.contentImageMap),
     media,
     comments: normalizeComments(data.comments),
     reactions: normalizeReactions(data.reactions),
@@ -308,10 +323,77 @@ const uploadPostMedia = async (
 
   return {
     ...post,
+    content: rewriteContentImageSources(
+      post.content,
+      post.contentImageMap,
+      media,
+    ),
+    contentImageMap: rewriteContentImageMap(post.contentImageMap, media),
     media,
     status: "synced",
     updatedAt: new Date().toISOString(),
   };
+};
+
+const rewriteContentImageSources = (
+  content: MemoryRichTextDocument | undefined,
+  contentImageMap: MemoryContentImageMap | undefined,
+  media: MemoryMedia[],
+): MemoryRichTextDocument | undefined => {
+  if (!content) {
+    return content;
+  }
+
+  const mediaById = new Map(media.map((item) => [item.id, item]));
+  const mediaByUri = new Map(media.map((item) => [item.uri, item]));
+  const imageMap = contentImageMap ?? {};
+
+  const rewriteNode = (node: MemoryRichTextNode): MemoryRichTextNode => {
+    const attrs = node.attrs;
+    const source = typeof attrs?.src === "string" ? attrs.src : undefined;
+    const mappedMedia = source
+      ? (mediaById.get(imageMap[source] ?? "") ?? mediaByUri.get(source))
+      : undefined;
+
+    return {
+      ...node,
+      attrs:
+        node.type === "image" && attrs && mappedMedia
+          ? { ...attrs, src: mappedMedia.uri }
+          : attrs,
+      content: node.content?.map(rewriteNode),
+    };
+  };
+
+  return {
+    ...content,
+    content: content.content?.map(rewriteNode),
+  };
+};
+
+const rewriteContentImageMap = (
+  contentImageMap: MemoryContentImageMap | undefined,
+  media: MemoryMedia[],
+): MemoryContentImageMap | undefined => {
+  if (!contentImageMap) {
+    return contentImageMap;
+  }
+
+  const mediaById = new Map(media.map((item) => [item.id, item]));
+  const next: MemoryContentImageMap = {};
+
+  Object.entries(contentImageMap).forEach(([source, mediaId]) => {
+    const item = mediaById.get(mediaId);
+    next[source] = mediaId;
+    if (item) {
+      next[item.uri] = mediaId;
+      if (item.thumbnailUri) {
+        next[item.thumbnailUri] = mediaId;
+      }
+    }
+  });
+
+  return next;
 };
 
 // The thumbnail lives next to the original at a deterministic path, written by

@@ -4,10 +4,12 @@ import NetInfo from "@react-native-community/netinfo";
 import {
   createId,
   createMemoryPost,
+  type MemoryContentImageMap,
   type MemoryComment,
   type MemoryDeliveryStatus,
   type MemoryMedia,
   type MemoryPost,
+  type MemoryRichTextDocument,
 } from "@may/core";
 
 import { buildSampleMemories } from "../data/demoMemories";
@@ -33,6 +35,8 @@ const wallPostPageSize = 10;
 
 type SendMemoryInput = {
   body: string;
+  content?: MemoryRichTextDocument;
+  contentImageMap?: MemoryContentImageMap;
   media: MemoryMedia[];
 };
 
@@ -293,23 +297,20 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   }, [activeMemberId, familyId, hydrated, remotePostLimit, updatePosts]);
 
   const markPostSynced = useCallback(
-    (
-      postId: string,
-      status: MemoryDeliveryStatus,
-      updatedAt: string,
-      media?: MemoryMedia[],
-    ) => {
+    (savedPost: MemoryPost) => {
       updatePosts((current) =>
         current.map((post) =>
-          post.id === postId
+          post.id === savedPost.id
             ? {
                 ...post,
+                content: savedPost.content,
+                contentImageMap: savedPost.contentImageMap,
                 errorMessage: undefined,
-                media: media ?? post.media,
+                media: savedPost.media,
                 status: syncableStatuses.has(post.status)
-                  ? status
+                  ? savedPost.status
                   : post.status,
-                updatedAt,
+                updatedAt: savedPost.updatedAt,
               }
             : post,
         ),
@@ -394,12 +395,7 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
             status: savedPost.status,
           });
           remotePostIds.current.add(post.id);
-          markPostSynced(
-            post.id,
-            savedPost.status,
-            savedPost.updatedAt,
-            savedPost.media,
-          );
+          markPostSynced(savedPost);
         })
         .catch((error) => markPostFailed(post.id, error))
         .finally(() => {
@@ -451,12 +447,14 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   );
 
   const sendMemory = useCallback(
-    ({ body, media }: SendMemoryInput) => {
+    ({ body, content, contentImageMap, media }: SendMemoryInput) => {
       const post = {
         ...createMemoryPost({
           familyId,
           authorId: activeMemberId,
           body,
+          content,
+          contentImageMap,
           media,
         }),
         status: "queued" as const,

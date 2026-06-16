@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -6,6 +13,7 @@ import {
   FlatList,
   Image,
   Modal,
+  Platform,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   Pressable,
@@ -24,6 +32,8 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import { BlurView } from "expo-blur";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   PanGestureHandler,
   LegacyScrollView as GestureHandlerScrollView,
@@ -50,9 +60,14 @@ import {
 } from "lucide-react-native";
 
 import {
+  hasRichTextContent,
+  richTextImageSources,
   type MemoryMedia,
   type MemoryMediaKind,
   type MemoryPost,
+  type MemoryRichTextDocument,
+  type MemoryRichTextMark,
+  type MemoryRichTextNode,
 } from "@may/core";
 
 import type { MemoryDraft } from "../hooks/useDrafts";
@@ -90,7 +105,18 @@ const wallHorizontalPadding = 18;
 const memoryCardPadding = 16;
 const wallPrefetchTrailingItems = 4;
 const backToFirstPostThreshold = 2;
-const postBodyPreviewLines = 4;
+const postBodyPreviewLines = 6;
+const postBodyLineHeight = 22;
+const postBodyPreviewHeight = postBodyPreviewLines * postBodyLineHeight;
+const postBodyBlurHeight = 64;
+const postBodyMediaOverlap = 16;
+const postBodyMediaGap = 10;
+const postBodyFadeColors = [
+  "rgba(255,255,255,0)",
+  "rgba(255,255,255,0.5)",
+  "rgba(255,255,255,0.92)",
+  "rgba(255,255,255,1)",
+] as const;
 const wallViewabilityConfig = { itemVisiblePercentThreshold: 20 };
 
 export function Wall() {
@@ -802,6 +828,29 @@ function MemoryCard({
 }) {
   const author = resolveAuthor(post.authorId);
   const heartedByMe = post.reactions.heart?.includes(activeMemberId) ?? false;
+  const [postContentCollapsed, setPostContentCollapsed] = useState(false);
+  const hasRichContent = hasRichTextContent(post.content);
+  const richImageIds = useMemo(
+    () => contentImageMediaIds(post.content, post.contentImageMap, post.media),
+    [post.content, post.contentImageMap, post.media],
+  );
+  const remainingMedia = useMemo(
+    () =>
+      hasRichContent
+        ? post.media.filter((media) => !richImageIds.has(media.id))
+        : post.media,
+    [hasRichContent, post.media, richImageIds],
+  );
+  const postContent =
+    hasRichContent && post.content ? (
+      <RichMemoryContent
+        content={post.content}
+        contentImageMap={post.contentImageMap}
+        media={post.media}
+      />
+    ) : post.body ? (
+      <Text style={styles.postBody}>{post.body}</Text>
+    ) : null;
 
   return (
     <Surface style={styles.card}>
@@ -828,17 +877,23 @@ function MemoryCard({
         <StatusGlyph onPress={onShowStatusInfo} status={post.status} />
       </View>
 
-      {post.body ? (
-        <Text
-          ellipsizeMode="tail"
-          numberOfLines={postBodyPreviewLines}
-          style={styles.postBody}
+      {postContent ? (
+        <ExpandablePostContent
+          body={post.body}
+          hasFollowingMedia={remainingMedia.length > 0}
+          onCollapsedChange={setPostContentCollapsed}
         >
-          {post.body}
-        </Text>
+          {postContent}
+        </ExpandablePostContent>
       ) : null}
 
-      {post.media.length > 0 ? <MediaCarousel media={post.media} /> : null}
+      {remainingMedia.length > 0 ? (
+        <View
+          style={postContentCollapsed ? styles.mediaBehindPostPreview : null}
+        >
+          <MediaCarousel media={remainingMedia} />
+        </View>
+      ) : null}
 
       <View style={styles.cardActions}>
         <Pressable
@@ -899,6 +954,404 @@ function MemoryCard({
     </Surface>
   );
 }
+
+function ExpandablePostContent({
+  body,
+  children,
+  hasFollowingMedia = false,
+  onCollapsedChange,
+}: {
+  body: string;
+  children: ReactNode;
+  hasFollowingMedia?: boolean;
+  onCollapsedChange?: (isCollapsed: boolean) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [bodyLineCount, setBodyLineCount] = useState(0);
+  const bodyText = body.trim();
+  const shouldMeasureBody = bodyText.length > 0;
+  const likelyNeedsPreview =
+    bodyText.length > 220 ||
+    bodyText.split(/\r?\n/).length > postBodyPreviewLines;
+  const isTruncated = bodyLineCount > postBodyPreviewLines;
+  const canToggle = isTruncated || (bodyLineCount === 0 && likelyNeedsPreview);
+  const isCollapsed = !expanded && canToggle;
+
+  useEffect(() => {
+    setExpanded(false);
+    setBodyLineCount(0);
+  }, [body]);
+
+  useEffect(() => {
+    onCollapsedChange?.(isCollapsed);
+  }, [isCollapsed, onCollapsedChange]);
+
+  const handleBodyLayout = useCallback(
+    (event: { nativeEvent: { lines: unknown[] } }) => {
+      const nextLineCount = event.nativeEvent.lines.length;
+      setBodyLineCount((currentLineCount) =>
+        currentLineCount === nextLineCount ? currentLineCount : nextLineCount,
+      );
+    },
+    [],
+  );
+
+  const toggleExpanded = useCallback(() => {
+    tapFeedback();
+    setExpanded((current) => !current);
+  }, []);
+
+  return (
+    <View style={styles.postContentShell}>
+      <View
+        style={[
+          styles.postContentClip,
+          isCollapsed ? styles.postContentCollapsed : null,
+        ]}
+      >
+        {children}
+      </View>
+
+      {shouldMeasureBody ? (
+        <Text
+          accessibilityElementsHidden
+          accessible={false}
+          importantForAccessibility="no-hide-descendants"
+          onTextLayout={handleBodyLayout}
+          pointerEvents="none"
+          style={[styles.postBody, styles.postBodyMeasure]}
+        >
+          {body}
+        </Text>
+      ) : null}
+
+      {isCollapsed ? (
+        <View
+          pointerEvents="box-none"
+          style={[
+            styles.postBodyBlur,
+            hasFollowingMedia ? styles.postBodyBlurWithMedia : null,
+          ]}
+        >
+          <BlurView
+            intensity={7}
+            pointerEvents="none"
+            style={[styles.postBodyBlurBand, styles.postBodyBlurBandSoft]}
+            tint="light"
+          />
+          <BlurView
+            intensity={16}
+            pointerEvents="none"
+            style={[styles.postBodyBlurBand, styles.postBodyBlurBandMedium]}
+            tint="light"
+          />
+          <BlurView
+            intensity={28}
+            pointerEvents="none"
+            style={[styles.postBodyBlurBand, styles.postBodyBlurBandStrong]}
+            tint="light"
+          />
+          <LinearGradient
+            colors={postBodyFadeColors}
+            locations={[0, 0.18, 0.54, 1]}
+            pointerEvents="none"
+            style={styles.postBodyFade}
+          />
+          <Pressable
+            accessibilityLabel="Read full post"
+            accessibilityRole="button"
+            onPress={toggleExpanded}
+            style={({ pressed }) => [
+              styles.readMoreButton,
+              hasFollowingMedia ? styles.readMoreButtonWithMedia : null,
+              pressed ? styles.pressedButton : null,
+            ]}
+          >
+            <Text style={styles.readMoreText}>Read more</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {expanded && canToggle ? (
+        <Pressable
+          accessibilityLabel="Collapse post"
+          accessibilityRole="button"
+          onPress={toggleExpanded}
+          style={({ pressed }) => [
+            styles.showLessButton,
+            pressed ? styles.pressedButton : null,
+          ]}
+        >
+          <Text style={styles.readMoreText}>Show less</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+const contentImageMediaIds = (
+  content?: MemoryRichTextDocument,
+  contentImageMap: Record<string, string> = {},
+  media: MemoryMedia[] = [],
+) =>
+  new Set(
+    richTextImageSources(content)
+      .map((source) => {
+        const mapped = contentImageMap[source];
+        return (
+          mapped ??
+          media.find(
+            (item) => item.uri === source || item.thumbnailUri === source,
+          )?.id
+        );
+      })
+      .filter((id): id is string => Boolean(id)),
+  );
+
+function RichMemoryContent({
+  content,
+  contentImageMap = {},
+  media,
+}: {
+  content: MemoryRichTextDocument;
+  contentImageMap?: Record<string, string>;
+  media: MemoryMedia[];
+}) {
+  const imageMedia = useMemo(
+    () => collectRichContentImages(content, contentImageMap, media),
+    [content, contentImageMap, media],
+  );
+  const thumbnailCacheRequests = useMemo(
+    () =>
+      imageMedia.map((image) => ({
+        media: image,
+        uri: image.thumbnailUri ?? image.uri,
+        variant: "thumbnail" as const,
+      })),
+    [imageMedia],
+  );
+  const cachedThumbnailUris = useImageUriCache(thumbnailCacheRequests);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const closePreview = useCallback(() => setPreviewIndex(null), []);
+
+  const openImage = useCallback(
+    (image: MemoryMedia) => {
+      const nextIndex = imageMedia.findIndex((item) => item.id === image.id);
+      if (nextIndex >= 0) {
+        setPreviewIndex(nextIndex);
+      }
+    },
+    [imageMedia],
+  );
+
+  return (
+    <View style={styles.richContent}>
+      {content.content?.map((node, index) =>
+        renderRichBlock({
+          cachedThumbnailUris,
+          contentImageMap,
+          key: String(index),
+          media,
+          node,
+          onOpenImage: openImage,
+        }),
+      )}
+      <MediaPreviewer
+        images={imageMedia}
+        initialIndex={previewIndex ?? 0}
+        onClose={closePreview}
+        visible={previewIndex !== null}
+      />
+    </View>
+  );
+}
+
+const collectRichContentImages = (
+  content: MemoryRichTextDocument,
+  contentImageMap: Record<string, string>,
+  media: MemoryMedia[],
+) => {
+  const images: MemoryMedia[] = [];
+  const seen = new Set<string>();
+
+  richTextImageSources(content).forEach((source, index) => {
+    const item = resolveRichImageMedia(source, contentImageMap, media, index);
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      images.push(item);
+    }
+  });
+
+  return images;
+};
+
+const resolveRichImageMedia = (
+  source: string,
+  contentImageMap: Record<string, string>,
+  media: MemoryMedia[],
+  index = 0,
+): MemoryMedia => {
+  const mappedId = contentImageMap[source];
+  return (
+    media.find((item) => item.id === mappedId) ??
+    media.find(
+      (item) =>
+        item.kind === "image" &&
+        (item.uri === source || item.thumbnailUri === source),
+    ) ?? {
+      id: `content-image-${index}`,
+      kind: "image",
+      uri: source,
+    }
+  );
+};
+
+const renderRichBlock = ({
+  cachedThumbnailUris,
+  contentImageMap,
+  key,
+  media,
+  node,
+  onOpenImage,
+}: {
+  cachedThumbnailUris: Record<string, string>;
+  contentImageMap: Record<string, string>;
+  key: string;
+  media: MemoryMedia[];
+  node: MemoryRichTextNode;
+  onOpenImage: (media: MemoryMedia) => void;
+}): ReactNode => {
+  switch (node.type) {
+    case "heading":
+      return (
+        <Text key={key} style={styles.richHeading}>
+          {renderRichInline(node.content)}
+        </Text>
+      );
+    case "paragraph":
+      return (
+        <Text key={key} style={styles.postBody}>
+          {renderRichInline(node.content)}
+        </Text>
+      );
+    case "blockquote":
+      return (
+        <View key={key} style={styles.richQuote}>
+          {node.content?.map((child, index) =>
+            renderRichBlock({
+              cachedThumbnailUris,
+              contentImageMap,
+              key: `${key}-${index}`,
+              media,
+              node: child,
+              onOpenImage,
+            }),
+          )}
+        </View>
+      );
+    case "bulletList":
+    case "orderedList":
+      return (
+        <View key={key} style={styles.richList}>
+          {node.content?.map((child, index) => (
+            <View key={`${key}-${index}`} style={styles.richListItem}>
+              <Text style={styles.richListBullet}>
+                {node.type === "orderedList" ? `${index + 1}.` : "•"}
+              </Text>
+              <View style={styles.richListItemBody}>
+                {child.content?.map((grandchild, grandchildIndex) =>
+                  renderRichBlock({
+                    cachedThumbnailUris,
+                    contentImageMap,
+                    key: `${key}-${index}-${grandchildIndex}`,
+                    media,
+                    node: grandchild,
+                    onOpenImage,
+                  }),
+                )}
+              </View>
+            </View>
+          ))}
+        </View>
+      );
+    case "horizontalRule":
+      return <View key={key} style={styles.richRule} />;
+    case "image": {
+      const source = typeof node.attrs?.src === "string" ? node.attrs.src : "";
+      if (!source) {
+        return null;
+      }
+      const image = resolveRichImageMedia(source, contentImageMap, media);
+      const uri =
+        cachedThumbnailUris[image.thumbnailUri ?? image.uri] ??
+        image.thumbnailUri ??
+        image.uri;
+
+      return (
+        <Pressable
+          accessibilityLabel="Open image"
+          accessibilityRole="button"
+          key={key}
+          onPress={() => onOpenImage(image)}
+          style={styles.richImageButton}
+        >
+          <Image
+            resizeMode="cover"
+            source={imageSource(uri)}
+            style={styles.richImage as ImageStyle}
+          />
+        </Pressable>
+      );
+    }
+    default:
+      return node.content?.map((child, index) =>
+        renderRichBlock({
+          cachedThumbnailUris,
+          contentImageMap,
+          key: `${key}-${index}`,
+          media,
+          node: child,
+          onOpenImage,
+        }),
+      );
+  }
+};
+
+const renderRichInline = (nodes: MemoryRichTextNode[] = []): ReactNode[] =>
+  nodes.map((node, index) => {
+    if (node.type === "hardBreak") {
+      return "\n";
+    }
+    if (node.type !== "text") {
+      return renderRichInline(node.content);
+    }
+
+    return (
+      <Text key={index} style={richTextMarkStyle(node.marks)}>
+        {node.text}
+      </Text>
+    );
+  });
+
+const richTextMarkStyle = (marks: MemoryRichTextMark[] = []) =>
+  marks.map((mark) => {
+    switch (mark.type) {
+      case "bold":
+        return styles.richBold;
+      case "italic":
+        return styles.richItalic;
+      case "strike":
+        return styles.richStrike;
+      case "underline":
+        return styles.richUnderline;
+      case "link":
+        return styles.richLink;
+      case "code":
+        return styles.richCode;
+      default:
+        return null;
+    }
+  });
 
 function MediaCarousel({ media }: { media: MemoryMedia[] }) {
   // The carousel measures its own width once, then sizes every slide to it.
@@ -1739,6 +2192,170 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     lineHeight: 22,
+  },
+  postContentShell: {
+    position: "relative",
+  },
+  postContentClip: {
+    overflow: "visible",
+  },
+  postContentCollapsed: {
+    maxHeight: postBodyPreviewHeight,
+    overflow: "hidden",
+  },
+  postBodyMeasure: {
+    left: 0,
+    opacity: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  postBodyBlur: {
+    alignItems: "center",
+    bottom: 0,
+    height: postBodyBlurHeight,
+    justifyContent: "center",
+    left: -1,
+    overflow: "visible",
+    position: "absolute",
+    right: -1,
+  },
+  postBodyBlurWithMedia: {
+    bottom: -postBodyMediaOverlap,
+    height: postBodyBlurHeight + postBodyMediaOverlap,
+  },
+  postBodyBlurBand: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+  },
+  postBodyBlurBandSoft: {
+    height: "72%",
+    opacity: 0.38,
+  },
+  postBodyBlurBandMedium: {
+    height: "52%",
+    opacity: 0.72,
+  },
+  postBodyBlurBandStrong: {
+    height: "34%",
+    opacity: 1,
+  },
+  postBodyFade: {
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  readMoreButton: {
+    alignItems: "center",
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  readMoreButtonWithMedia: {
+    alignSelf: "center",
+    bottom: postBodyMediaOverlap + 22,
+    position: "absolute",
+  },
+  showLessButton: {
+    alignItems: "center",
+    alignSelf: "center",
+    borderRadius: radius.pill,
+    marginTop: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  readMoreText: {
+    color: palette.ink,
+    fontSize: 12,
+    fontWeight: "900",
+    textShadowColor: "rgba(255,255,255,0.72)",
+    textShadowOffset: { height: 0, width: 0 },
+    textShadowRadius: 5,
+  },
+  pressedButton: {
+    opacity: 0.72,
+    transform: [{ scale: 0.98 }],
+  },
+  mediaBehindPostPreview: {
+    marginTop: -postBodyMediaOverlap + postBodyMediaGap,
+    zIndex: 1,
+  },
+  richContent: {
+    gap: 12,
+  },
+  richHeading: {
+    color: palette.ink,
+    fontSize: 19,
+    fontWeight: "900",
+    lineHeight: 25,
+  },
+  richQuote: {
+    borderLeftColor: "rgba(91,126,102,0.42)",
+    borderLeftWidth: 3,
+    gap: 8,
+    paddingLeft: 12,
+  },
+  richList: {
+    gap: 7,
+  },
+  richListItem: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  richListBullet: {
+    color: palette.inkMuted,
+    fontSize: 15,
+    fontWeight: "900",
+    lineHeight: 22,
+    minWidth: 20,
+  },
+  richListItemBody: {
+    flex: 1,
+    gap: 6,
+  },
+  richRule: {
+    backgroundColor: "rgba(37,45,43,0.12)",
+    height: 1,
+    marginVertical: 4,
+  },
+  richImageButton: {
+    aspectRatio: 4 / 3,
+    backgroundColor: palette.surface,
+    borderRadius: radius.medium,
+    overflow: "hidden",
+    width: "100%",
+  },
+  richImage: {
+    height: "100%",
+    width: "100%",
+  },
+  richBold: {
+    fontWeight: "900",
+  },
+  richItalic: {
+    fontStyle: "italic",
+  },
+  richStrike: {
+    textDecorationLine: "line-through",
+  },
+  richUnderline: {
+    textDecorationLine: "underline",
+  },
+  richLink: {
+    color: palette.moss,
+    textDecorationLine: "underline",
+  },
+  richCode: {
+    backgroundColor: "rgba(37,45,43,0.08)",
+    fontFamily: Platform.select({
+      android: "monospace",
+      ios: "Menlo",
+      default: undefined,
+    }),
   },
   media: {
     gap: 10,

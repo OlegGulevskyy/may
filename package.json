@@ -4,6 +4,8 @@
     "dev": "turbo run dev --filter=!functions",
     "build": "turbo run build",
     "clean": "turbo run clean && rm -rf node_modules",
+    "deploy:fns": "pnpm --filter functions build && pnpm dlx firebase-tools deploy --only functions",
+    "firebase:reauth": "pnpm dlx firebase-tools login --reauth",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .gitignore"
   },
   "devDependencies": {
