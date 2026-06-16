@@ -1,0 +1,15 @@
+name: iOS release build
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  build_ios:
+    name: Build iOS
+    type: build
+    params:
+      platform: ios
+      profile: production
+      message: Release ${{ github.ref_name }}

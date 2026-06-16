@@ -12,6 +12,9 @@
       "distribution": "internal"
     },
     "production": {
+      "ios": {
+        "image": "latest"
+      },
       "autoIncrement": true
     }
   },
