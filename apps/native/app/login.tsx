@@ -49,7 +49,7 @@ export default function Login() {
             <View style={styles.mark}>
               <Heart color="#fff" fill="#fff" size={22} />
             </View>
-            <Text style={styles.kicker}>May</Text>
+            <Text style={styles.kicker}>Dinomay</Text>
             <Text style={styles.title}>Sign in to your family wall.</Text>
             <Text style={styles.subtitle}>
               Use Google so your wall follows you after reinstalling the app or

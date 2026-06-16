@@ -46,7 +46,7 @@ export const STATUS_META: Record<MemoryDeliveryStatus, StatusMeta> = {
     icon: Clock,
     tint: palette.gold,
     title: "Waiting to sync",
-    description: "Uploads once May can reach your private cloud.",
+    description: "Uploads once Dinomay can reach your private cloud.",
   },
   synced: {
     icon: Cloud,

@@ -9,7 +9,7 @@ export function SplashScreen() {
     <ScreenBackground>
       <StatusBar style="dark" />
       <View style={styles.splash}>
-        <Text style={styles.mark}>May</Text>
+        <Text style={styles.mark}>Dinomay</Text>
         <ActivityIndicator color={palette.inkMuted} />
       </View>
     </ScreenBackground>

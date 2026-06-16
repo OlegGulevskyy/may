@@ -296,7 +296,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
 
     throw new Error(
-      "May received Google permission, but delivery status did not update yet. Open Settings again in a moment.",
+      "Dinomay received Google permission, but delivery status did not update yet. Open Settings again in a moment.",
     );
   }, [family]);
 

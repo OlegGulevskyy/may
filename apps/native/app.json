@@ -5,10 +5,10 @@
         "projectId": "7a7a9b53-58b0-4d92-8499-a0559eeff350"
       }
     },
-    "name": "May",
+    "name": "Dinomay",
     "slug": "may",
     "version": "1.0.0",
-    "scheme": "may",
+    "scheme": "dinomay",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,7 +18,10 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.oleggulevskyy.may"
+      "bundleIdentifier": "com.oleggulevskyy.may",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": true
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -36,15 +39,15 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "May needs photo access so you can send memories from your library.",
-          "cameraPermission": "May needs camera access so you can capture memories inside the app.",
-          "microphonePermission": "May needs microphone access so videos can include sound."
+          "photosPermission": "Dinomay needs photo access so you can send memories from your library.",
+          "cameraPermission": "Dinomay needs camera access so you can capture memories inside the app.",
+          "microphonePermission": "Dinomay needs microphone access so videos can include sound."
         }
       ],
       [
         "expo-audio",
         {
-          "microphonePermission": "May needs microphone access so you can record voice notes.",
+          "microphonePermission": "Dinomay needs microphone access so you can record voice notes.",
           "enableBackgroundPlayback": false,
           "enableBackgroundRecording": false
         }

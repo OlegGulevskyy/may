@@ -57,7 +57,7 @@ export default function Welcome() {
             <View style={styles.mark}>
               <Heart color="#fff" fill="#fff" size={22} />
             </View>
-            <Text style={styles.kicker}>May</Text>
+            <Text style={styles.kicker}>Dinomay</Text>
             <Text style={styles.title}>
               A quiet place for the moments you want her to keep.
             </Text>

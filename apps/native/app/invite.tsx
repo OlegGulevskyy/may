@@ -124,7 +124,7 @@ export default function Invite() {
 
   const share = async () => {
     await Share.share({
-      message: `Join our May wall for ${family.childName}. Open May and enter code ${pending.code}, or tap: ${inviteLink}`,
+      message: `Join our Dinomay wall for ${family.childName}. Open Dinomay and enter code ${pending.code}, or tap: ${inviteLink}`,
     }).catch(() => undefined);
   };
 
@@ -133,7 +133,7 @@ export default function Invite() {
       <View style={styles.intro}>
         <Text style={styles.title}>Invite someone close</Text>
         <Text style={styles.subtitle}>
-          Share this code. When they enter it in May, they&apos;ll join your
+          Share this code. When they enter it in Dinomay, they&apos;ll join your
           wall for {family.childName}.
         </Text>
       </View>

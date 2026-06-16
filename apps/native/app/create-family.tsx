@@ -103,7 +103,7 @@ export default function CreateFamily() {
                 autoCapitalize="words"
                 label="Your child's name"
                 onChangeText={setChildName}
-                placeholder="e.g. May"
+                placeholder="e.g. Dinomay"
                 value={childName}
               />
               <Field

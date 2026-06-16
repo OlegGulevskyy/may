@@ -120,7 +120,7 @@ export function SettingsPanel({
       .then(() =>
         Alert.alert(
           "Google delivery connected",
-          "May can now send emails and upload files with this Google account.",
+          "Dinomay can now send emails and upload files with this Google account.",
         ),
       )
       .catch((error) =>

@@ -1305,7 +1305,7 @@ export const processGoogleDeliveryGrantRequest = onDocumentCreated(
 
       if (!refreshToken) {
         throw new Error(
-          "Google did not return a refresh token. Revoke May in your Google Account permissions, then connect again.",
+          "Google did not return a refresh token. Revoke Dinomay in your Google Account permissions, then connect again.",
         );
       }
 
