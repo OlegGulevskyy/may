@@ -8,6 +8,7 @@ import {
 
 import { GOOGLE_DELIVERY_SCOPES } from "@may/core";
 
+import { nativeEnv } from "./env";
 import { getFirebaseServices } from "./firebase";
 
 type GoogleSignInModule =
@@ -30,12 +31,6 @@ const toAuthUser = (user: User): AuthUser => ({
   email: user.email,
   photoURL: user.photoURL,
 });
-
-const env = (
-  globalThis as typeof globalThis & {
-    process?: { env?: Record<string, string | undefined> };
-  }
-).process?.env;
 
 let googleSignInModule: GoogleSignInModule | null = null;
 let googleSignInConfigKey: string | null = null;
@@ -60,10 +55,10 @@ const loadGoogleSignInModule = () => {
 };
 
 const getRequiredGoogleWebClientId = () => {
-  const webClientId = env?.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  const webClientId = nativeEnv.googleWebClientId;
   if (!webClientId) {
     throw new Error(
-      "Google sign-in is not configured. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID in apps/native/.env.local, then rebuild the native app.",
+      "Google sign-in is not configured for this build. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID before bundling, then rebuild the native app.",
     );
   }
   return webClientId;
@@ -79,7 +74,7 @@ const configureGoogleSignIn = async ({
   scopes?: string[];
 } = {}) => {
   const { GoogleSignin } = loadGoogleSignInModule();
-  const iosClientId = env?.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+  const iosClientId = nativeEnv.googleIosClientId;
   const webClientId = getRequiredGoogleWebClientId();
   const configKey = JSON.stringify({
     forceCodeForRefreshToken: Boolean(forceCodeForRefreshToken),

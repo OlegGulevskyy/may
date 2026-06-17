@@ -66,6 +66,16 @@ For a fully cloud-built development app with no generated native folders on
 your machine, use EAS Build with the same public Google env vars configured in
 EAS.
 
+For TestFlight or any EAS cloud build, `apps/native/.env.local` is not enough
+because it is ignored locally. Store the public client ids in the matching EAS
+environment before building:
+
+```sh
+cd apps/native
+eas env:create --environment production --visibility plaintext --name EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID --value your-web-oauth-client-id.apps.googleusercontent.com
+eas env:create --environment production --visibility plaintext --name EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID --value your-ios-oauth-client-id.apps.googleusercontent.com
+```
+
 6. Copy `apps/functions/.env.example` to `apps/functions/.env.local` and set
    the backend web OAuth client id:
 
