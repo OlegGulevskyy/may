@@ -42,14 +42,25 @@ const hashString = (value: string) => {
   return (hash >>> 0).toString(36);
 };
 
-const extensionFromMedia = (media: MemoryMedia, uri: string) => {
+const extensionFromMedia = (
+  media: MemoryMedia,
+  uri: string,
+  variant: ImageCacheVariant,
+) => {
+  const fileNameExtension = media.fileName?.split(".").pop();
+  const uriExtension = uri.split("?")[0]?.split("#")[0]?.split(".").pop();
   const raw =
-    media.fileName?.split(".").pop() ??
-    uri.split("?")[0]?.split("#")[0]?.split(".").pop();
+    variant === "thumbnail"
+      ? (uriExtension ?? fileNameExtension)
+      : (fileNameExtension ?? uriExtension);
   const extension = raw?.toLowerCase();
 
   if (extension && /^[a-z0-9]+$/.test(extension) && extension.length <= 5) {
     return extension;
+  }
+
+  if (variant === "thumbnail" && media.kind !== "image") {
+    return "jpg";
   }
 
   switch (media.mimeType?.toLowerCase()) {
@@ -81,6 +92,7 @@ const cachedImageFileUri = (
   return `${directory}${safeId}-${hashString(uri)}.${extensionFromMedia(
     media,
     uri,
+    variant,
   )}`;
 };
 
@@ -91,7 +103,11 @@ const cacheImageUri = ({
 }: ImageCacheRequest): Promise<string> => {
   const directory = imageCacheDirectories[variant];
 
-  if (media.kind !== "image" || !isNetworkUri(uri) || !directory) {
+  const isImageRequest =
+    media.kind === "image" ||
+    (variant === "thumbnail" && media.thumbnailUri === uri);
+
+  if (!isImageRequest || !isNetworkUri(uri) || !directory) {
     return Promise.resolve(uri);
   }
 

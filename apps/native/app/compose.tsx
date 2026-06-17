@@ -23,7 +23,15 @@ import {
 import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { Camera, Film, ImageIcon, Mic, Trash2, X } from "lucide-react-native";
+import {
+  Camera,
+  Film,
+  ImageIcon,
+  Mic,
+  Play,
+  Trash2,
+  X,
+} from "lucide-react-native";
 
 import {
   richTextImageSources,
@@ -849,11 +857,14 @@ function AttachmentPreview({
     );
   }
 
+  const thumbnailUri =
+    attachment.kind === "image" ? attachment.uri : attachment.thumbnailUri;
+
   return (
     <View style={styles.attachment}>
-      {attachment.kind === "image" ? (
+      {thumbnailUri ? (
         <Image
-          source={{ uri: attachment.uri }}
+          source={{ uri: thumbnailUri }}
           style={styles.attachmentImage as ImageStyle}
         />
       ) : (
@@ -870,6 +881,11 @@ function AttachmentPreview({
           )}
         </View>
       )}
+      {attachment.kind === "video" ? (
+        <View style={styles.attachmentVideoBadge}>
+          <Play color="#fff" fill="#fff" size={13} />
+        </View>
+      ) : null}
       <Pressable
         accessibilityLabel="Remove attachment"
         accessibilityRole="button"
@@ -1013,6 +1029,17 @@ const styles = StyleSheet.create({
     height: 92,
     justifyContent: "center",
     width: 92,
+  },
+  attachmentVideoBadge: {
+    alignItems: "center",
+    backgroundColor: "rgba(31,28,24,0.66)",
+    borderRadius: radius.pill,
+    height: 30,
+    justifyContent: "center",
+    left: 31,
+    position: "absolute",
+    top: 31,
+    width: 30,
   },
   attachmentRemove: {
     alignItems: "center",

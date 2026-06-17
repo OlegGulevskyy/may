@@ -122,6 +122,7 @@ export function Wall() {
     familyMemberships,
     signOut,
     switchFamily,
+    updateDeliveryCcEmails,
   } = useAppState();
 
   // `Wall` only renders once the app state is ready (see app/index.tsx).
@@ -445,6 +446,7 @@ export function Wall() {
             <SettingsPanel
               activeFamilyId={fam.id}
               childName={fam.childName}
+              deliveryCcEmails={fam.deliveryCcEmails}
               familyMemberships={familyMemberships}
               googleDeliveryConnection={fam.deliveryConnection}
               onConnectGoogleDelivery={connectGoogleDelivery}
@@ -452,6 +454,7 @@ export function Wall() {
               onJoinFamily={() => router.push("/join")}
               onSignOut={confirmSignOut}
               onSwitchFamily={switchFamily}
+              onUpdateDeliveryCcEmails={updateDeliveryCcEmails}
             />
           </ScrollView>
         )}
@@ -1380,6 +1383,13 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
     () => media.filter((item) => item.kind === "image"),
     [media],
   );
+  const thumbnailMedia = useMemo(
+    () =>
+      media.filter(
+        (item) => item.kind === "image" || Boolean(item.thumbnailUri),
+      ),
+    [media],
+  );
   const originalCacheRequests = useMemo(
     () =>
       imageMedia.map((item) => ({
@@ -1391,12 +1401,12 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
   );
   const thumbnailCacheRequests = useMemo(
     () =>
-      imageMedia.map((item) => ({
+      thumbnailMedia.map((item) => ({
         media: item,
         uri: item.thumbnailUri ?? item.uri,
         variant: "thumbnail" as const,
       })),
-    [imageMedia],
+    [thumbnailMedia],
   );
   const cachedThumbnailUris = useImageUriCache(thumbnailCacheRequests);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -1479,7 +1489,7 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
             {media.map((item) => (
               <MediaSlide
                 cachedUri={
-                  item.kind === "image"
+                  item.kind === "image" || item.thumbnailUri
                     ? cachedThumbnailUris[item.thumbnailUri ?? item.uri]
                     : undefined
                 }
@@ -1566,6 +1576,8 @@ function MediaSlide({
     return <AudioMediaSlide height={height} media={media} width={width} />;
   }
 
+  const thumbnailUri = cachedUri ?? media.thumbnailUri;
+
   return (
     <Pressable
       accessibilityLabel="Open video"
@@ -1573,23 +1585,53 @@ function MediaSlide({
       onPress={() => onOpenVideo?.(media)}
       style={({ pressed }) => [
         styles.mediaSlide,
-        styles.videoTile,
+        thumbnailUri ? styles.videoThumbnailTile : styles.videoTile,
         { height, width },
         pressed ? styles.pressedButton : null,
       ]}
     >
-      <View style={styles.videoIcon}>
-        <Film color="#fff" size={28} />
-      </View>
-      <Text style={styles.mediaFallbackTitle}>Video memory</Text>
-      <View style={styles.videoMetaRow}>
-        <Play color={palette.berry} fill={palette.berry} size={13} />
-        <Text style={styles.mediaFallbackMeta}>
-          {media.durationMs
-            ? formatMediaDuration(media.durationMs / 1000)
-            : "Watch"}
-        </Text>
-      </View>
+      {thumbnailUri ? (
+        <>
+          <Image
+            onError={({ nativeEvent }) =>
+              console.warn("[MaySync] video thumbnail load failed", {
+                error: nativeEvent?.error,
+                mediaId: media.id,
+                uri: thumbnailUri,
+              })
+            }
+            resizeMode="cover"
+            source={imageSource(thumbnailUri)}
+            style={StyleSheet.absoluteFill as ImageStyle}
+          />
+          <View style={styles.videoThumbnailShade} />
+          <View style={styles.videoPlayBadge}>
+            <Play color="#fff" fill="#fff" size={22} />
+          </View>
+          {media.durationMs ? (
+            <View style={styles.videoDurationPill}>
+              <Text style={styles.videoDurationText}>
+                {formatMediaDuration(media.durationMs / 1000)}
+              </Text>
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <>
+          <View style={styles.videoIcon}>
+            <Film color="#fff" size={28} />
+          </View>
+          <Text style={styles.mediaFallbackTitle}>Video memory</Text>
+          <View style={styles.videoMetaRow}>
+            <Play color={palette.berry} fill={palette.berry} size={13} />
+            <Text style={styles.mediaFallbackMeta}>
+              {media.durationMs
+                ? formatMediaDuration(media.durationMs / 1000)
+                : "Watch"}
+            </Text>
+          </View>
+        </>
+      )}
     </Pressable>
   );
 }
@@ -2500,6 +2542,45 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(176,76,64,0.08)",
     gap: 10,
     justifyContent: "center",
+  },
+  videoThumbnailTile: {
+    backgroundColor: "#191817",
+  },
+  videoThumbnailShade: {
+    backgroundColor: "rgba(20,18,16,0.18)",
+    bottom: 0,
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
+  },
+  videoPlayBadge: {
+    alignItems: "center",
+    backgroundColor: "rgba(31,28,24,0.64)",
+    borderColor: "rgba(255,255,255,0.28)",
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 58,
+    justifyContent: "center",
+    left: "50%",
+    position: "absolute",
+    top: "50%",
+    transform: [{ translateX: -29 }, { translateY: -29 }],
+    width: 58,
+  },
+  videoDurationPill: {
+    backgroundColor: "rgba(31,28,24,0.68)",
+    borderRadius: radius.pill,
+    bottom: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    position: "absolute",
+    right: 10,
+  },
+  videoDurationText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "800",
   },
   videoIcon: {
     alignItems: "center",

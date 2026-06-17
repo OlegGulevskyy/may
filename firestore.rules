@@ -11,6 +11,32 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid));
     }
 
+    function validFamilyDeliveryCcEmails() {
+      return !request.resource.data.keys().hasAny(["deliveryCcEmails"])
+        || (
+          request.resource.data.deliveryCcEmails is list
+          && request.resource.data.deliveryCcEmails.size() <= 10
+          && validDeliveryCcEmailAt(0)
+          && validDeliveryCcEmailAt(1)
+          && validDeliveryCcEmailAt(2)
+          && validDeliveryCcEmailAt(3)
+          && validDeliveryCcEmailAt(4)
+          && validDeliveryCcEmailAt(5)
+          && validDeliveryCcEmailAt(6)
+          && validDeliveryCcEmailAt(7)
+          && validDeliveryCcEmailAt(8)
+          && validDeliveryCcEmailAt(9)
+        );
+    }
+
+    function validDeliveryCcEmailAt(index) {
+      return request.resource.data.deliveryCcEmails.size() <= index
+        || (
+          request.resource.data.deliveryCcEmails[index] is string
+          && request.resource.data.deliveryCcEmails[index].size() <= 320
+        );
+    }
+
     match /inviteCodes/{code} {
       allow create: if signedIn()
         && request.resource.data.code == code
@@ -44,7 +70,16 @@ service cloud.firestore {
     match /families/{familyId} {
       allow create: if signedIn();
       allow read: if familyMember(familyId);
-      allow update, delete: if false;
+      allow update: if familyMember(familyId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "deliveryCcEmail",
+          "deliveryCcEmails",
+          "updatedAt"
+        ])
+        && !request.resource.data.keys().hasAny(["deliveryCcEmail"])
+        && request.resource.data.updatedAt is string
+        && validFamilyDeliveryCcEmails();
+      allow delete: if false;
 
       match /members/{memberId} {
         allow read: if familyMember(familyId)

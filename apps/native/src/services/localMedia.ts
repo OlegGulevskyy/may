@@ -1,5 +1,6 @@
 import * as FileSystem from "expo-file-system/legacy";
 import type { ImagePickerAsset } from "expo-image-picker";
+import * as VideoThumbnails from "expo-video-thumbnails";
 
 import { createId, type MemoryMedia, type MemoryMediaKind } from "@may/core";
 
@@ -12,18 +13,23 @@ export const persistPickedAsset = async (
   const id = createId("media");
   const extension = getExtension(asset, kind);
   const destination = `${mediaDirectory}${id}.${extension}`;
+  const thumbnailDestination = `${mediaDirectory}${id}-thumb.jpg`;
 
   await FileSystem.makeDirectoryAsync(mediaDirectory, { intermediates: true });
   await FileSystem.copyAsync({
     from: asset.uri,
     to: destination,
   });
+  const thumbnailUri =
+    kind === "video"
+      ? await persistVideoThumbnail(asset, thumbnailDestination)
+      : undefined;
 
   return {
     id,
     kind,
     uri: destination,
-    thumbnailUri: kind === "image" ? destination : undefined,
+    thumbnailUri: kind === "image" ? destination : thumbnailUri,
     fileName: `${id}.${extension}`,
     mimeType: defaultMimeType(kind, extension),
     durationMs: asset.duration ?? undefined,
@@ -61,6 +67,39 @@ export const persistRecordedAudio = async (
   }
 
   return media;
+};
+
+const persistVideoThumbnail = async (
+  asset: ImagePickerAsset,
+  destination: string,
+) => {
+  try {
+    const frame = await VideoThumbnails.getThumbnailAsync(asset.uri, {
+      quality: 0.76,
+      time: thumbnailFrameTime(asset.duration),
+    });
+
+    await FileSystem.copyAsync({
+      from: frame.uri,
+      to: destination,
+    });
+
+    await FileSystem.deleteAsync(frame.uri, { idempotent: true });
+    return destination;
+  } catch (error) {
+    console.warn("[MayMedia] video thumbnail generation failed", {
+      error: error instanceof Error ? error.message : "Something went wrong.",
+    });
+    return undefined;
+  }
+};
+
+const thumbnailFrameTime = (durationMs?: number | null) => {
+  if (!durationMs || durationMs <= 0) {
+    return 1000;
+  }
+
+  return Math.max(0, Math.min(1000, durationMs - 100));
 };
 
 const getExtension = (asset: ImagePickerAsset, kind: MemoryMediaKind) => {

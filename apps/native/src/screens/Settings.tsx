@@ -7,6 +7,7 @@ import {
   HardDrive,
   LogOut,
   MailCheck,
+  MailPlus,
   Trash2,
   UserPlus,
   Users,
@@ -23,9 +24,12 @@ import {
 } from "../services/imageCache";
 import { palette, radius } from "../theme";
 
+const maxCcEmailCount = 10;
+
 export function SettingsPanel({
   activeFamilyId,
   childName,
+  deliveryCcEmails,
   familyMemberships,
   googleDeliveryConnection,
   onConnectGoogleDelivery,
@@ -33,9 +37,11 @@ export function SettingsPanel({
   onJoinFamily,
   onSignOut,
   onSwitchFamily,
+  onUpdateDeliveryCcEmails,
 }: {
   activeFamilyId: string;
   childName: string;
+  deliveryCcEmails?: string[];
   familyMemberships: FamilyMembership[];
   googleDeliveryConnection?: GoogleDeliveryConnection;
   onConnectGoogleDelivery: () => Promise<unknown>;
@@ -43,9 +49,11 @@ export function SettingsPanel({
   onJoinFamily: () => void;
   onSignOut: () => void;
   onSwitchFamily: (familyId: string) => Promise<unknown>;
+  onUpdateDeliveryCcEmails: (ccEmails: string[]) => Promise<unknown>;
 }) {
   const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
   const [cacheBusy, setCacheBusy] = useState(false);
+  const [ccBusy, setCcBusy] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
   const [switchingFamilyId, setSwitchingFamilyId] = useState<string | null>(
     null,
@@ -129,6 +137,70 @@ export function SettingsPanel({
       )
       .finally(() => setDeliveryBusy(false));
   }, [onConnectGoogleDelivery]);
+
+  const saveDeliveryCcEmails = useCallback(
+    (nextCcEmails?: string | null) => {
+      const { emails, invalidEmails } = parseEmailList(nextCcEmails ?? "");
+
+      if (invalidEmails.length > 0) {
+        Alert.alert(
+          "Check CC addresses",
+          `These do not look like valid email addresses: ${invalidEmails.join(", ")}`,
+        );
+        return;
+      }
+
+      if (emails.length > maxCcEmailCount) {
+        Alert.alert(
+          "Too many CC addresses",
+          `Use ${maxCcEmailCount} CC addresses or fewer.`,
+        );
+        return;
+      }
+
+      setCcBusy(true);
+      onUpdateDeliveryCcEmails(emails)
+        .then(() =>
+          Alert.alert(
+            "CC addresses updated",
+            emails.length > 0
+              ? `Future delivery emails will copy ${formatEmailList(emails)}.`
+              : "Future delivery emails will not include a CC address.",
+          ),
+        )
+        .catch((error) =>
+          Alert.alert("Could not update CC addresses", getErrorMessage(error)),
+        )
+        .finally(() => setCcBusy(false));
+    },
+    [onUpdateDeliveryCcEmails],
+  );
+
+  const editDeliveryCcEmails = useCallback(() => {
+    Alert.prompt(
+      "CC addresses",
+      "Copy future delivery emails to these addresses. Separate multiple emails with commas.",
+      [
+        { text: "Cancel", style: "cancel" },
+        ...(deliveryCcEmails?.length
+          ? [
+              {
+                onPress: () => saveDeliveryCcEmails(""),
+                style: "destructive" as const,
+                text: "Remove all",
+              },
+            ]
+          : []),
+        {
+          onPress: (value?: string) => saveDeliveryCcEmails(value),
+          text: "Save",
+        },
+      ],
+      "plain-text",
+      deliveryCcEmails?.join(", ") ?? "",
+      "email-address",
+    );
+  }, [deliveryCcEmails, saveDeliveryCcEmails]);
 
   const switchFamily = useCallback(
     (familyId: string) => {
@@ -254,6 +326,18 @@ export function SettingsPanel({
                     : "Connect"
             }
           />
+          <Row
+            disabled={ccBusy}
+            detail={formatEmailList(deliveryCcEmails)}
+            divider
+            icon={<MailPlus color={palette.moss} size={20} />}
+            label="CC addresses"
+            onPress={editDeliveryCcEmails}
+            showChevron
+            value={
+              ccBusy ? "Saving" : deliveryCcEmails?.length ? "Edit" : "Add"
+            }
+          />
         </Surface>
       </Section>
 
@@ -371,6 +455,38 @@ function deliveryConnectionEmail(
   }
 
   return connection.googleEmail;
+}
+
+function parseEmailList(value: string) {
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  const invalidEmails: string[] = [];
+
+  for (const part of value.split(/[\s,;]+/)) {
+    const email = part.trim();
+    if (!email) {
+      continue;
+    }
+    if (!looksLikeEmail(email)) {
+      invalidEmails.push(email);
+      continue;
+    }
+    const key = email.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      emails.push(email);
+    }
+  }
+
+  return { emails, invalidEmails };
+}
+
+function formatEmailList(emails: string[] | undefined) {
+  return emails?.length ? emails.join(", ") : undefined;
+}
+
+function looksLikeEmail(value: string) {
+  return /^\S+@\S+\.\S+$/.test(value.trim());
 }
 
 function formatCacheSize(bytes: number) {

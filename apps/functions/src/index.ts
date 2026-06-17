@@ -196,6 +196,29 @@ const optionalString = (value: unknown) =>
     ? value.trim()
     : undefined;
 
+const normalizeEmailRecipients = (value: unknown) => {
+  const values = Array.isArray(value) ? value : [value];
+  const seen = new Set<string>();
+
+  return values
+    .map(optionalString)
+    .filter((email): email is string => Boolean(email))
+    .filter((email) => {
+      const key = email.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+};
+
+const normalizeFamilyDeliveryCcEmails = (family: Record<string, unknown>) =>
+  normalizeEmailRecipients([
+    ...(Array.isArray(family.deliveryCcEmails) ? family.deliveryCcEmails : []),
+    family.deliveryCcEmail,
+  ]);
+
 const isDeliveryReadyStatus = (status: unknown) =>
   status === "synced" || status === "stored";
 
@@ -911,6 +934,7 @@ const sendMemoryEmail = async ({
   authorName,
   childEmail,
   childName,
+  ccEmails,
   driveFiles,
   fromEmail,
   post,
@@ -919,6 +943,7 @@ const sendMemoryEmail = async ({
   authorName: string;
   childEmail: string;
   childName: string;
+  ccEmails: string[];
   driveFiles: UploadedDriveFile[];
   fromEmail: string;
   post: MemoryPost;
@@ -965,6 +990,7 @@ const sendMemoryEmail = async ({
     post,
   });
   const rawMessage = buildGmailMimeMessage({
+    ccEmails,
     childEmail,
     fromEmail,
     fromName: authorName,
@@ -995,6 +1021,7 @@ const sendMemoryEmail = async ({
 };
 
 const buildGmailMimeMessage = ({
+  ccEmails,
   childEmail,
   fromEmail,
   fromName,
@@ -1003,6 +1030,7 @@ const buildGmailMimeMessage = ({
   subject,
   text,
 }: {
+  ccEmails: string[];
   childEmail: string;
   fromEmail: string;
   fromName: string;
@@ -1034,6 +1062,9 @@ const buildGmailMimeMessage = ({
   return [
     `From: ${encodeHeader(fromName)} <${sanitizeHeaderValue(fromEmail)}>`,
     `To: ${sanitizeHeaderValue(childEmail)}`,
+    ...(ccEmails.length > 0
+      ? [`Cc: ${ccEmails.map(sanitizeHeaderValue).join(", ")}`]
+      : []),
     `Subject: ${encodeHeader(subject)}`,
     `Date: ${new Date().toUTCString()}`,
     "MIME-Version: 1.0",
@@ -1137,20 +1168,20 @@ const uploadMediaToDrive = async ({
   };
 };
 
-const shareDriveFileWithChild = async ({
+const shareDriveFileWithRecipient = async ({
   accessToken,
-  childEmail,
   fileId,
+  recipientEmail,
 }: {
   accessToken: string;
-  childEmail: string;
   fileId: string;
+  recipientEmail: string;
 }) => {
   const response = await fetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions?sendNotificationEmail=false`,
     {
       body: JSON.stringify({
-        emailAddress: childEmail,
+        emailAddress: recipientEmail,
         role: "reader",
         type: "user",
       }),
@@ -1189,6 +1220,9 @@ const deliverMemoryPost = async ({
   const family = familySnap.data() ?? {};
   const childEmail = requireString(family.childEmail, "childEmail");
   const childName = requireString(family.childName, "childName");
+  const ccEmails = normalizeFamilyDeliveryCcEmails(family).filter(
+    (email) => email.toLowerCase() !== childEmail.toLowerCase(),
+  );
   const privateState = privateSnap.data() as
     | GoogleDeliveryPrivateState
     | undefined;
@@ -1206,6 +1240,12 @@ const deliverMemoryPost = async ({
     "googleDelivery.googleEmail",
   );
   const accessToken = await refreshGoogleAccessToken(refreshToken);
+  const requiredDriveShareEmails = normalizeEmailRecipients([
+    childEmail,
+  ]).filter((email) => email.toLowerCase() !== fromEmail.toLowerCase());
+  const ccDriveShareEmails = normalizeEmailRecipients(ccEmails).filter(
+    (email) => email.toLowerCase() !== fromEmail.toLowerCase(),
+  );
   const media = normalizePostMedia(post.media);
   const driveFiles: UploadedDriveFile[] = [];
 
@@ -1217,11 +1257,27 @@ const deliverMemoryPost = async ({
       media: item,
       postId,
     });
-    await shareDriveFileWithChild({
-      accessToken,
-      childEmail,
-      fileId: driveFile.id,
-    });
+    for (const recipientEmail of requiredDriveShareEmails) {
+      await shareDriveFileWithRecipient({
+        accessToken,
+        fileId: driveFile.id,
+        recipientEmail,
+      });
+    }
+    for (const recipientEmail of ccDriveShareEmails) {
+      await shareDriveFileWithRecipient({
+        accessToken,
+        fileId: driveFile.id,
+        recipientEmail,
+      }).catch((error) =>
+        logger.warn("Failed to share Drive file with CC recipient", {
+          error: error instanceof Error ? error.message : String(error),
+          familyId,
+          fileId: driveFile.id,
+          postId,
+        }),
+      );
+    }
     driveFiles.push(driveFile);
   }
 
@@ -1234,6 +1290,7 @@ const deliverMemoryPost = async ({
   const gmailMessage = await sendMemoryEmail({
     accessToken,
     authorName,
+    ccEmails,
     childEmail,
     childName,
     driveFiles,

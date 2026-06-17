@@ -108,7 +108,12 @@ const normalizeStatus = (value: unknown): MemoryDeliveryStatus =>
     : "synced";
 
 const hasUploadableRemoteMedia = (media: MemoryMedia[]) =>
-  media.some((item) => isUploadableLocalUri(item.uri));
+  media.some(
+    (item) =>
+      isUploadableLocalUri(item.uri) ||
+      (typeof item.thumbnailUri === "string" &&
+        isUploadableLocalUri(item.thumbnailUri)),
+  );
 
 const normalizeRemoteStatus = (
   status: MemoryDeliveryStatus,
@@ -185,6 +190,9 @@ const getSignedInServices = () => {
 const mediaStoragePath = (post: MemoryPost, media: MemoryMedia) =>
   `families/${post.familyId}/posts/${post.id}/media/${media.id}/original`;
 
+const mediaThumbnailStoragePath = (storagePath: string) =>
+  storagePath.replace(/\/original$/, "/thumb_960.jpg");
+
 const fileExtension = (value?: string) =>
   value?.split("?")[0]?.split(".").pop()?.toLowerCase();
 
@@ -245,6 +253,51 @@ const blobFromLocalUri = (uri: string): Promise<Blob> =>
     xhr.send(null);
   });
 
+const uploadLocalMediaThumbnail = async (
+  storage: FirebaseStorage,
+  post: MemoryPost,
+  media: MemoryMedia,
+  originalStoragePath: string,
+): Promise<Pick<MemoryMedia, "thumbnailStoragePath" | "thumbnailUri">> => {
+  if (
+    !media.thumbnailUri ||
+    !isUploadableLocalUri(media.thumbnailUri) ||
+    media.thumbnailUri === media.uri
+  ) {
+    return {};
+  }
+
+  const thumbnailStoragePath =
+    media.thumbnailStoragePath ??
+    mediaThumbnailStoragePath(originalStoragePath);
+  const thumbnailRef = ref(storage, thumbnailStoragePath);
+
+  syncLog("media thumbnail upload starting", {
+    kind: media.kind,
+    mediaId: media.id,
+    postId: post.id,
+    storagePath: thumbnailStoragePath,
+  });
+
+  const blob = await blobFromLocalUri(media.thumbnailUri);
+  try {
+    await uploadBytes(thumbnailRef, blob, { contentType: "image/jpeg" });
+  } finally {
+    (blob as Blob & { close?: () => void }).close?.();
+  }
+
+  const thumbnailUri = await getDownloadURL(thumbnailRef);
+
+  syncLog("media thumbnail upload finished", {
+    kind: media.kind,
+    mediaId: media.id,
+    postId: post.id,
+    storagePath: thumbnailStoragePath,
+  });
+
+  return { thumbnailStoragePath, thumbnailUri };
+};
+
 const uploadLocalMedia = async (
   storage: FirebaseStorage,
   post: MemoryPost,
@@ -281,6 +334,29 @@ const uploadLocalMedia = async (
   }
 
   const uri = await getDownloadURL(storageRef);
+  const hasUploadableThumbnail =
+    typeof media.thumbnailUri === "string" &&
+    isUploadableLocalUri(media.thumbnailUri);
+  let uploadedThumbnail: Pick<
+    MemoryMedia,
+    "thumbnailStoragePath" | "thumbnailUri"
+  > = {};
+
+  try {
+    uploadedThumbnail = await uploadLocalMediaThumbnail(
+      storage,
+      post,
+      media,
+      storagePath,
+    );
+  } catch (error) {
+    syncWarn("media thumbnail upload failed", {
+      kind: media.kind,
+      mediaId: media.id,
+      message: getErrorMessage(error),
+      postId: post.id,
+    });
+  }
 
   syncLog("media upload finished", {
     kind: media.kind,
@@ -293,7 +369,13 @@ const uploadLocalMedia = async (
     ...media,
     mimeType: contentType,
     storagePath,
-    thumbnailUri: media.kind === "image" ? uri : media.thumbnailUri,
+    thumbnailStoragePath:
+      uploadedThumbnail.thumbnailStoragePath ?? media.thumbnailStoragePath,
+    thumbnailUri:
+      media.kind === "image"
+        ? uri
+        : (uploadedThumbnail.thumbnailUri ??
+          (hasUploadableThumbnail ? undefined : media.thumbnailUri)),
     uri,
   };
 };
@@ -396,10 +478,27 @@ const rewriteContentImageMap = (
   return next;
 };
 
-// The thumbnail lives next to the original at a deterministic path, written by
-// the generateImageThumbnail Storage function.
-const thumbnailStoragePath = (storagePath: string) =>
-  storagePath.replace(/\/original$/, "/thumb_960.jpg");
+const resolveThumbnailDownloadUrl = async (
+  storage: FirebaseStorage,
+  media: MemoryMedia,
+  originalUri: string,
+) => {
+  const thumbnailStoragePath =
+    media.thumbnailStoragePath ??
+    (media.kind === "image" && media.storagePath
+      ? mediaThumbnailStoragePath(media.storagePath)
+      : undefined);
+
+  if (!thumbnailStoragePath) {
+    return media.kind === "image" ? originalUri : media.thumbnailUri;
+  }
+
+  try {
+    return await getDownloadURL(ref(storage, thumbnailStoragePath));
+  } catch {
+    return media.kind === "image" ? originalUri : media.thumbnailUri;
+  }
+};
 
 const withDownloadUrl = async (
   storage: FirebaseStorage,
@@ -410,23 +509,9 @@ const withDownloadUrl = async (
   }
 
   const uri = await getDownloadURL(ref(storage, media.storagePath));
+  const thumbnailUri = await resolveThumbnailDownloadUrl(storage, media, uri);
 
-  if (media.kind !== "image") {
-    return { ...media, uri };
-  }
-
-  // The thumbnail is produced asynchronously after upload, so it may not exist
-  // yet for a just-posted image — fall back to the original until it does.
-  let thumbnailUri = uri;
-  try {
-    thumbnailUri = await getDownloadURL(
-      ref(storage, thumbnailStoragePath(media.storagePath)),
-    );
-  } catch {
-    // Thumbnail not generated yet; the original stands in until the next load.
-  }
-
-  return { ...media, thumbnailUri, uri };
+  return thumbnailUri ? { ...media, thumbnailUri, uri } : { ...media, uri };
 };
 
 const withDownloadUrls = async (

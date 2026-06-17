@@ -25,6 +25,7 @@ import {
   loadRemoteSessionForCurrentUser,
   subscribeToRemoteFamily,
   switchRemoteFamily,
+  updateRemoteFamilyDeliveryCcEmails,
   type UserFamilyMembership,
 } from "../services/familyBackend";
 import {
@@ -80,6 +81,7 @@ type AppStateValue = {
   addInvite: (label: string) => Promise<FamilyInvite>;
   connectGoogleDelivery: () => Promise<void>;
   joinWithCode: (input: { yourName: string; code: string }) => Promise<boolean>;
+  updateDeliveryCcEmails: (ccEmails: string[]) => Promise<void>;
   setActiveMemberId: (memberId: string) => void;
   switchFamily: (familyId: string) => Promise<void>;
   reset: () => void;
@@ -97,6 +99,22 @@ const sortFamilyMemberships = (memberships: FamilyMembership[]) =>
   [...memberships].sort((first, second) =>
     first.joinedAt.localeCompare(second.joinedAt),
   );
+
+const normalizeEmailList = (emails: string[]) => {
+  const seen = new Set<string>();
+
+  return emails
+    .map((email) => email.trim())
+    .filter(Boolean)
+    .filter((email) => {
+      const key = email.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+};
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
@@ -353,6 +371,33 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const updateDeliveryCcEmails = useCallback(
+    async (ccEmails: string[]) => {
+      if (!family) {
+        throw new Error(
+          "Cannot update delivery settings before a family exists.",
+        );
+      }
+
+      const normalizedCcEmails = normalizeEmailList(ccEmails);
+      await updateRemoteFamilyDeliveryCcEmails({
+        ccEmails: normalizedCcEmails,
+        familyId: family.id,
+      });
+      setSyncError(null);
+      setFamily((current) =>
+        current?.id === family.id
+          ? {
+              ...current,
+              deliveryCcEmails:
+                normalizedCcEmails.length > 0 ? normalizedCcEmails : undefined,
+            }
+          : current,
+      );
+    },
+    [family],
+  );
+
   const switchFamily = useCallback(
     async (familyId: string) => {
       if (family?.id === familyId) {
@@ -449,6 +494,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       addInvite,
       connectGoogleDelivery,
       joinWithCode,
+      updateDeliveryCcEmails,
       setActiveMemberId,
       switchFamily,
       reset,
@@ -470,6 +516,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       addInvite,
       connectGoogleDelivery,
       joinWithCode,
+      updateDeliveryCcEmails,
       setActiveMemberId,
       switchFamily,
       reset,

@@ -46,6 +46,8 @@ export type Family = {
   childName: string;
   /** The child's Gmail inbox memories are eventually delivered to. */
   childEmail: string;
+  /** Optional addresses copied on future memory delivery emails. */
+  deliveryCcEmails?: string[];
   members: FamilyMember[];
   invites: FamilyInvite[];
   deliveryConnection?: GoogleDeliveryConnection;

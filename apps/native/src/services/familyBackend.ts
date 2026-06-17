@@ -1,11 +1,13 @@
 import {
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
   onSnapshot,
   runTransaction,
   setDoc,
+  updateDoc,
   writeBatch,
   type Firestore,
   type Unsubscribe,
@@ -70,7 +72,12 @@ type InviteLookup = {
 
 type RemoteFamilyBase = Pick<
   Family,
-  "id" | "childName" | "childEmail" | "createdAt" | "deliveryConnection"
+  | "id"
+  | "childName"
+  | "childEmail"
+  | "deliveryCcEmails"
+  | "createdAt"
+  | "deliveryConnection"
 >;
 
 const inviteLookupCollection = "inviteCodes";
@@ -232,6 +239,27 @@ const googleDeliveryConnectionFromValue = (
   };
 };
 
+const deliveryCcEmailsFromValue = (data: Record<string, unknown>) => {
+  const values = [
+    ...(Array.isArray(data.deliveryCcEmails) ? data.deliveryCcEmails : []),
+    data.deliveryCcEmail,
+  ];
+  const seen = new Set<string>();
+
+  return values
+    .filter((value): value is string => typeof value === "string")
+    .map((email) => email.trim())
+    .filter(Boolean)
+    .filter((email) => {
+      const key = email.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+};
+
 const familyBaseFromSnapshot = (
   id: string,
   data: Record<string, unknown>,
@@ -239,6 +267,7 @@ const familyBaseFromSnapshot = (
   id,
   childName: String(data.childName ?? ""),
   childEmail: String(data.childEmail ?? ""),
+  deliveryCcEmails: deliveryCcEmailsFromValue(data),
   createdAt:
     typeof data.createdAt === "string"
       ? data.createdAt
@@ -623,6 +652,26 @@ export const switchRemoteFamily = async (
     ]),
     profile: toLocalProfile(member),
   };
+};
+
+export const updateRemoteFamilyDeliveryCcEmails = async ({
+  familyId,
+  ccEmails,
+}: {
+  familyId: string;
+  ccEmails: string[];
+}) => {
+  const signedIn = requireSignedIn();
+  const normalizedCcEmails = deliveryCcEmailsFromValue({
+    deliveryCcEmails: ccEmails,
+  });
+
+  await updateDoc(doc(signedIn.services.db, "families", familyId), {
+    deliveryCcEmail: deleteField(),
+    deliveryCcEmails:
+      normalizedCcEmails.length > 0 ? normalizedCcEmails : deleteField(),
+    updatedAt: new Date().toISOString(),
+  });
 };
 
 export const subscribeToRemoteFamily = async ({
