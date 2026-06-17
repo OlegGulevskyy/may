@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, StyleSheet, Text, View } from "react-native";
 import {
   Check,
   ChevronRight,
@@ -9,13 +9,14 @@ import {
   MailCheck,
   Trash2,
   UserPlus,
-  Wifi,
-  WifiOff,
+  Users,
 } from "lucide-react-native";
 
-import type { FamilyMember, GoogleDeliveryConnection } from "@may/core";
+import type { GoogleDeliveryConnection } from "@may/core";
 
 import { Surface } from "../ui/Glass";
+import { HapticPressable as Pressable } from "../ui/HapticPressable";
+import type { FamilyMembership } from "../state/AppState";
 import {
   clearImageCache,
   getImageCacheSizeBytes,
@@ -23,35 +24,32 @@ import {
 import { palette, radius } from "../theme";
 
 export function SettingsPanel({
-  activeMemberId,
+  activeFamilyId,
   childName,
-  forcedOffline,
+  familyMemberships,
   googleDeliveryConnection,
-  isOnline,
-  isSolo,
-  members,
   onConnectGoogleDelivery,
   onInvite,
+  onJoinFamily,
   onSignOut,
-  setActiveMemberId,
-  toggleForcedOffline,
+  onSwitchFamily,
 }: {
-  activeMemberId: string;
+  activeFamilyId: string;
   childName: string;
-  forcedOffline: boolean;
+  familyMemberships: FamilyMembership[];
   googleDeliveryConnection?: GoogleDeliveryConnection;
-  isOnline: boolean;
-  isSolo: boolean;
-  members: FamilyMember[];
   onConnectGoogleDelivery: () => Promise<unknown>;
   onInvite: () => void;
+  onJoinFamily: () => void;
   onSignOut: () => void;
-  setActiveMemberId: (memberId: string) => void;
-  toggleForcedOffline: () => void;
+  onSwitchFamily: (familyId: string) => Promise<unknown>;
 }) {
   const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
   const [cacheBusy, setCacheBusy] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const [switchingFamilyId, setSwitchingFamilyId] = useState<string | null>(
+    null,
+  );
   const deliveryConnected = googleDeliveryConnection?.status === "connected";
   const deliveryNeedsReconnect =
     googleDeliveryConnection?.status === "needs_reconnect";
@@ -132,6 +130,22 @@ export function SettingsPanel({
       .finally(() => setDeliveryBusy(false));
   }, [onConnectGoogleDelivery]);
 
+  const switchFamily = useCallback(
+    (familyId: string) => {
+      if (familyId === activeFamilyId || switchingFamilyId) {
+        return;
+      }
+
+      setSwitchingFamilyId(familyId);
+      onSwitchFamily(familyId)
+        .catch((error) =>
+          Alert.alert("Could not switch walls", getErrorMessage(error)),
+        )
+        .finally(() => setSwitchingFamilyId(null));
+    },
+    [activeFamilyId, onSwitchFamily, switchingFamilyId],
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -139,47 +153,74 @@ export function SettingsPanel({
         <Text style={styles.subtitle}>For {childName}&apos;s wall</Text>
       </View>
 
-      <Section title="Family">
+      <Section title="Memories wall">
         <Surface style={styles.group}>
-          {members.map((member, index) => {
-            const selected = activeMemberId === member.id;
+          {familyMemberships.map((membership, index) => {
+            const selected = activeFamilyId === membership.familyId;
+            const switching = switchingFamilyId === membership.familyId;
+
             return (
               <Pressable
-                accessibilityLabel={`Post as ${member.displayName}`}
+                accessibilityLabel={`Open ${membership.childName}'s wall`}
                 accessibilityRole="button"
-                key={member.id}
-                onPress={() => setActiveMemberId(member.id)}
+                key={membership.familyId}
+                onPress={() => switchFamily(membership.familyId)}
                 style={({ pressed }) => [
                   styles.row,
                   index > 0 ? styles.rowDivider : null,
+                  switchingFamilyId ? styles.rowDisabled : null,
                   pressed ? styles.rowPressed : null,
                 ]}
               >
                 <View
-                  style={[styles.avatar, selected ? styles.avatarActive : null]}
+                  style={[
+                    styles.wallIcon,
+                    selected ? styles.wallIconActive : null,
+                  ]}
                 >
-                  <Text
-                    style={[
-                      styles.avatarText,
-                      selected ? styles.avatarTextActive : null,
-                    ]}
-                  >
-                    {member.initials}
-                  </Text>
+                  <Users
+                    color={selected ? "#fff" : palette.inkMuted}
+                    size={19}
+                  />
                 </View>
                 <View style={styles.rowText}>
-                  <Text style={styles.rowTitle}>{member.displayName}</Text>
-                  <Text style={styles.rowMeta}>{member.role}</Text>
+                  <Text style={styles.rowTitle}>
+                    {membership.childName}&apos;s wall
+                  </Text>
+                  <Text style={styles.rowMeta}>
+                    {membership.role === "creator"
+                      ? "Your family"
+                      : "Joined family"}
+                  </Text>
                 </View>
+                {switching ? (
+                  <Text style={styles.rowValue}>Switching</Text>
+                ) : null}
                 {selected ? (
                   <View style={styles.activePill}>
                     <Check color={palette.moss} size={15} />
                     <Text style={styles.activePillText}>Active</Text>
                   </View>
+                ) : !switching ? (
+                  <ChevronRight color={palette.inkFaint} size={18} />
                 ) : null}
               </Pressable>
             );
           })}
+          <Row
+            divider={familyMemberships.length > 0}
+            icon={<UserPlus color={palette.berry} size={20} />}
+            label="Invite someone else"
+            onPress={onInvite}
+            showChevron
+          />
+          <Row
+            divider
+            icon={<UserPlus color={palette.berry} size={20} />}
+            label="Use invite code"
+            onPress={onJoinFamily}
+            showChevron
+          />
         </Surface>
       </Section>
 
@@ -187,6 +228,7 @@ export function SettingsPanel({
         <Surface style={styles.group}>
           <Row
             disabled={deliveryBusy}
+            detail={deliveryConnectionEmail(googleDeliveryConnection)}
             icon={
               deliveryConnected ? (
                 <MailCheck color={palette.moss} size={20} />
@@ -197,42 +239,21 @@ export function SettingsPanel({
             label="Google delivery"
             onPress={connectGoogleDelivery}
             showChevron
+            trailingAccessory={
+              deliveryConnected && !deliveryBusy ? (
+                <Check color={palette.moss} size={18} />
+              ) : undefined
+            }
             value={
               deliveryBusy
                 ? "Connecting"
                 : deliveryConnected
-                  ? "Connected"
+                  ? undefined
                   : deliveryNeedsReconnect
                     ? "Reconnect"
                     : "Connect"
             }
           />
-        </Surface>
-      </Section>
-
-      <Section title="Sync">
-        <Surface style={styles.group}>
-          <Row
-            icon={
-              isOnline ? (
-                <Wifi color={palette.moss} size={20} />
-              ) : (
-                <WifiOff color={palette.berry} size={20} />
-              )
-            }
-            label="Force offline"
-            onPress={toggleForcedOffline}
-            value={forcedOffline ? "On" : "Off"}
-          />
-          {isSolo ? (
-            <Row
-              divider
-              icon={<UserPlus color={palette.berry} size={20} />}
-              label="Invite someone close"
-              onPress={onInvite}
-              showChevron
-            />
-          ) : null}
         </Surface>
       </Section>
 
@@ -285,20 +306,24 @@ function Section({ children, title }: { children: ReactNode; title: string }) {
 function Row({
   disabled,
   destructive,
+  detail,
   divider,
   icon,
   label,
   onPress,
   showChevron,
+  trailingAccessory,
   value,
 }: {
   disabled?: boolean;
   destructive?: boolean;
+  detail?: string;
   divider?: boolean;
   icon: ReactNode;
   label: string;
   onPress: () => void;
   showChevron?: boolean;
+  trailingAccessory?: ReactNode;
   value?: string;
 }) {
   return (
@@ -314,15 +339,38 @@ function Row({
       ]}
     >
       <View style={styles.rowIcon}>{icon}</View>
-      <Text
-        style={[styles.rowLabel, destructive ? styles.rowLabelDanger : null]}
-      >
-        {label}
-      </Text>
-      {value ? <Text style={styles.rowValue}>{value}</Text> : null}
+      <View style={styles.rowText}>
+        <Text
+          numberOfLines={1}
+          style={[styles.rowLabel, destructive ? styles.rowLabelDanger : null]}
+        >
+          {label}
+        </Text>
+        {detail ? (
+          <Text selectable style={styles.rowDetail}>
+            {detail}
+          </Text>
+        ) : null}
+      </View>
+      {value ? (
+        <Text numberOfLines={1} style={styles.rowValue}>
+          {value}
+        </Text>
+      ) : null}
+      {trailingAccessory}
       {showChevron ? <ChevronRight color={palette.inkFaint} size={18} /> : null}
     </Pressable>
   );
+}
+
+function deliveryConnectionEmail(
+  connection: GoogleDeliveryConnection | undefined,
+) {
+  if (!connection?.googleEmail) {
+    return undefined;
+  }
+
+  return connection.googleEmail;
 }
 
 function formatCacheSize(bytes: number) {
@@ -401,6 +449,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     width: 24,
   },
+  wallIcon: {
+    alignItems: "center",
+    backgroundColor: "rgba(37,45,43,0.08)",
+    borderRadius: radius.pill,
+    height: 40,
+    justifyContent: "center",
+    width: 40,
+  },
+  wallIconActive: {
+    backgroundColor: palette.ink,
+  },
   rowText: {
     flex: 1,
     gap: 2,
@@ -418,36 +477,21 @@ const styles = StyleSheet.create({
   },
   rowLabel: {
     color: palette.ink,
-    flex: 1,
     fontSize: 16,
     fontWeight: "800",
   },
   rowLabelDanger: {
     color: palette.berry,
   },
+  rowDetail: {
+    color: palette.inkMuted,
+    fontSize: 13,
+    fontWeight: "700",
+  },
   rowValue: {
     color: palette.inkMuted,
     fontSize: 14,
     fontWeight: "800",
-  },
-  avatar: {
-    alignItems: "center",
-    backgroundColor: "rgba(37,45,43,0.08)",
-    borderRadius: radius.pill,
-    height: 40,
-    justifyContent: "center",
-    width: 40,
-  },
-  avatarActive: {
-    backgroundColor: palette.ink,
-  },
-  avatarText: {
-    color: palette.inkMuted,
-    fontSize: 14,
-    fontWeight: "900",
-  },
-  avatarTextActive: {
-    color: "#fff",
   },
   activePill: {
     alignItems: "center",

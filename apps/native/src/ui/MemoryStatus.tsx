@@ -1,11 +1,4 @@
-import {
-  Modal,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type ColorValue,
-} from "react-native";
+import { Modal, StyleSheet, Text, View, type ColorValue } from "react-native";
 import {
   Archive,
   Clock,
@@ -22,6 +15,7 @@ import {
 import type { MemoryDeliveryStatus } from "@may/core";
 
 import { palette, radius } from "../theme";
+import { HapticPressable as Pressable } from "./HapticPressable";
 
 type StatusMeta = {
   icon: LucideIcon;

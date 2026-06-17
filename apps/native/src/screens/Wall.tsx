@@ -16,7 +16,6 @@ import {
   Platform,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -34,6 +33,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
+import { useVideoPlayer, VideoView } from "expo-video";
 import {
   PanGestureHandler,
   LegacyScrollView as GestureHandlerScrollView,
@@ -47,8 +47,8 @@ import {
   Heart,
   House,
   MessageCircle,
-  Mic,
   Pencil,
+  Play,
   Plus,
   RotateCcw,
   Send,
@@ -63,7 +63,6 @@ import {
   hasRichTextContent,
   richTextImageSources,
   type MemoryMedia,
-  type MemoryMediaKind,
   type MemoryPost,
   type MemoryRichTextDocument,
   type MemoryRichTextMark,
@@ -74,11 +73,12 @@ import type { MemoryDraft } from "../hooks/useDrafts";
 import { useAppState } from "../state/AppState";
 import { useMemoryWallContext } from "../state/MemoryWallProvider";
 import { GlassCard, ScreenBackground, Surface } from "../ui/Glass";
+import { AudioMediaPlayer } from "../ui/AudioMediaPlayer";
+import { HapticPressable as Pressable } from "../ui/HapticPressable";
 import { StatusGlyph, StatusLegend } from "../ui/MemoryStatus";
 import { imageSource, useImageUriCache } from "../services/imageCache";
 import { getLocalString, setLocalString } from "../services/storage";
 import { SettingsPanel } from "./Settings";
-import { tapFeedback } from "../ui/haptics";
 import { palette, radius, shadow } from "../theme";
 
 type ResolveAuthor = (id: string) => { displayName: string; initials: string };
@@ -88,12 +88,6 @@ type WallListItem =
   | { id: "empty"; type: "empty" }
   | { id: "invite-nudge"; type: "invite-nudge" }
   | { id: string; post: MemoryPost; postIndex: number; type: "post" };
-
-const mediaTint: Record<MemoryMediaKind, string> = {
-  image: palette.moss,
-  video: palette.berry,
-  audio: palette.ink,
-};
 
 const inviteNudgeDismissedKey = (familyId: string) =>
   `may.invite-nudge-dismissed.${familyId}.v1`;
@@ -125,8 +119,9 @@ export function Wall() {
     activeMemberId,
     connectGoogleDelivery,
     family,
-    setActiveMemberId,
+    familyMemberships,
     signOut,
+    switchFamily,
   } = useAppState();
 
   // `Wall` only renders once the app state is ready (see app/index.tsx).
@@ -136,16 +131,13 @@ export function Wall() {
   const {
     addComment,
     drafts,
-    forcedOffline,
     hasMorePosts,
     hydrated,
-    isOnline,
     isLoadingMorePosts,
     loadMorePosts,
     posts,
     retryPost,
     seedSampleMemories,
-    toggleForcedOffline,
     toggleReaction,
   } = useMemoryWallContext();
 
@@ -292,7 +284,6 @@ export function Wall() {
   }, [router, signOut]);
 
   const dismissInviteNudge = useCallback(() => {
-    tapFeedback();
     setInviteNudgeDismissed(true);
     setLocalString(inviteNudgeStorageKey, "true");
   }, [inviteNudgeStorageKey]);
@@ -307,7 +298,6 @@ export function Wall() {
   }, []);
 
   const scrollToTop = useCallback(() => {
-    tapFeedback();
     wallHeaderScrollY.setValue(0);
     wallListRef.current?.scrollToOffset({
       animated: true,
@@ -453,18 +443,15 @@ export function Wall() {
             showsVerticalScrollIndicator={false}
           >
             <SettingsPanel
-              activeMemberId={memberId}
+              activeFamilyId={fam.id}
               childName={fam.childName}
-              forcedOffline={forcedOffline}
+              familyMemberships={familyMemberships}
               googleDeliveryConnection={fam.deliveryConnection}
-              isOnline={isOnline}
-              isSolo={isSolo}
-              members={fam.members}
               onConnectGoogleDelivery={connectGoogleDelivery}
               onInvite={() => router.push("/invite")}
+              onJoinFamily={() => router.push("/join")}
               onSignOut={confirmSignOut}
-              setActiveMemberId={setActiveMemberId}
-              toggleForcedOffline={toggleForcedOffline}
+              onSwitchFamily={switchFamily}
             />
           </ScrollView>
         )}
@@ -545,7 +532,6 @@ function BottomTabs({
           accessibilityLabel="New memory"
           accessibilityRole="button"
           onPress={() => {
-            tapFeedback();
             onNew();
           }}
           style={({ pressed }) => [
@@ -584,7 +570,6 @@ function TabButton({
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       onPress={() => {
-        tapFeedback();
         onPress();
       }}
       style={({ pressed }) => [
@@ -997,7 +982,6 @@ function ExpandablePostContent({
   );
 
   const toggleExpanded = useCallback(() => {
-    tapFeedback();
     setExpanded((current) => !current);
   }, []);
 
@@ -1416,7 +1400,9 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
   );
   const cachedThumbnailUris = useImageUriCache(thumbnailCacheRequests);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-  const height = Math.round(slideWidth * 0.75);
+  const [videoPreview, setVideoPreview] = useState<MemoryMedia | null>(null);
+  const audioOnly = media.every((item) => item.kind === "audio");
+  const height = audioOnly ? 76 : Math.round(slideWidth * 0.75);
 
   useImageUriCache(originalCacheRequests);
 
@@ -1457,6 +1443,7 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
   );
 
   const closePreview = useCallback(() => setPreviewIndex(null), []);
+  const closeVideoPreview = useCallback(() => setVideoPreview(null), []);
 
   return (
     <View
@@ -1500,6 +1487,7 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
                 key={item.id}
                 media={item}
                 onOpenPreview={openPreview}
+                onOpenVideo={setVideoPreview}
                 width={slideWidth}
               />
             ))}
@@ -1523,6 +1511,11 @@ function MediaCarousel({ media }: { media: MemoryMedia[] }) {
             onClose={closePreview}
             visible={previewIndex !== null}
           />
+          <VideoPreviewer
+            media={videoPreview}
+            onClose={closeVideoPreview}
+            visible={videoPreview !== null}
+          />
         </>
       ) : null}
     </View>
@@ -1534,12 +1527,14 @@ function MediaSlide({
   height,
   media,
   onOpenPreview,
+  onOpenVideo,
   width,
 }: {
   cachedUri?: string;
   height: number;
   media: MemoryMedia;
   onOpenPreview?: (media: MemoryMedia) => void;
+  onOpenVideo?: (media: MemoryMedia) => void;
   width: number;
 }) {
   if (media.kind === "image") {
@@ -1567,22 +1562,121 @@ function MediaSlide({
     );
   }
 
+  if (media.kind === "audio") {
+    return <AudioMediaSlide height={height} media={media} width={width} />;
+  }
+
   return (
-    <View style={[styles.mediaSlide, styles.mediaFallback, { height, width }]}>
-      {media.kind === "video" ? (
-        <Film color={mediaTint.video} size={28} />
-      ) : (
-        <Mic color={mediaTint.audio} size={28} />
-      )}
-      <Text style={styles.mediaFallbackTitle}>
-        {media.kind === "video" ? "Video memory" : "Voice note"}
-      </Text>
-      {media.durationMs ? (
+    <Pressable
+      accessibilityLabel="Open video"
+      accessibilityRole="button"
+      onPress={() => onOpenVideo?.(media)}
+      style={({ pressed }) => [
+        styles.mediaSlide,
+        styles.videoTile,
+        { height, width },
+        pressed ? styles.pressedButton : null,
+      ]}
+    >
+      <View style={styles.videoIcon}>
+        <Film color="#fff" size={28} />
+      </View>
+      <Text style={styles.mediaFallbackTitle}>Video memory</Text>
+      <View style={styles.videoMetaRow}>
+        <Play color={palette.berry} fill={palette.berry} size={13} />
         <Text style={styles.mediaFallbackMeta}>
-          {Math.max(1, Math.round(media.durationMs / 1000))}s
+          {media.durationMs
+            ? formatMediaDuration(media.durationMs / 1000)
+            : "Watch"}
         </Text>
-      ) : null}
-    </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function AudioMediaSlide({
+  height,
+  media,
+  width,
+}: {
+  height: number;
+  media: MemoryMedia;
+  width: number;
+}) {
+  return <AudioMediaPlayer media={media} style={{ height, width }} />;
+}
+
+function VideoPreviewer({
+  media,
+  onClose,
+  visible,
+}: {
+  media: MemoryMedia | null;
+  onClose: () => void;
+  visible: boolean;
+}) {
+  const insets = useSafeAreaInsets();
+  const player = useVideoPlayer(media?.uri ?? null, (videoPlayer) => {
+    videoPlayer.loop = false;
+    videoPlayer.timeUpdateEventInterval = 0.25;
+  });
+
+  useEffect(() => {
+    if (!visible || !media) {
+      player.pause();
+      return;
+    }
+
+    player.currentTime = 0;
+    player.play();
+
+    return () => {
+      player.pause();
+    };
+  }, [media, player, visible]);
+
+  if (!media) {
+    return null;
+  }
+
+  return (
+    <Modal
+      animationType="fade"
+      onRequestClose={onClose}
+      transparent
+      visible={visible}
+    >
+      <StatusBar style="light" />
+      <SafeAreaView
+        edges={["bottom"]}
+        style={[
+          styles.previewSafeArea,
+          { paddingTop: Math.max(insets.top, 24) },
+        ]}
+      >
+        <View style={styles.previewHeader}>
+          <Text style={styles.previewCounter}>Video memory</Text>
+          <Pressable
+            accessibilityLabel="Close video"
+            accessibilityRole="button"
+            onPress={onClose}
+            style={styles.previewClose}
+          >
+            <X color="#fff" size={22} />
+          </Pressable>
+        </View>
+
+        <View style={styles.videoPreviewBody}>
+          <VideoView
+            contentFit="contain"
+            fullscreenOptions={{ enable: true }}
+            nativeControls
+            player={player}
+            style={styles.videoPlayer}
+          />
+        </View>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -1872,6 +1966,18 @@ function formatTimestamp(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatMediaDuration(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "0:00";
+  }
+
+  const rounded = Math.floor(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const remainingSeconds = rounded % 60;
+
+  return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
 }
 
 function getErrorMessage(error: unknown) {
@@ -2389,6 +2495,25 @@ const styles = StyleSheet.create({
     gap: 8,
     justifyContent: "center",
   },
+  videoTile: {
+    alignItems: "center",
+    backgroundColor: "rgba(176,76,64,0.08)",
+    gap: 10,
+    justifyContent: "center",
+  },
+  videoIcon: {
+    alignItems: "center",
+    backgroundColor: palette.berry,
+    borderRadius: radius.pill,
+    height: 58,
+    justifyContent: "center",
+    width: 58,
+  },
+  videoMetaRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 5,
+  },
   mediaFallbackTitle: {
     color: palette.ink,
     fontSize: 14,
@@ -2435,6 +2560,14 @@ const styles = StyleSheet.create({
   },
   previewImage: {
     height: "100%",
+    width: "100%",
+  },
+  videoPreviewBody: {
+    flex: 1,
+    justifyContent: "center",
+  },
+  videoPlayer: {
+    flex: 1,
     width: "100%",
   },
   previewThumbs: {

@@ -27,6 +27,7 @@ export type MemoryMedia = {
   fileName?: string;
   mimeType?: string;
   durationMs?: number;
+  waveformPeaks?: number[];
   width?: number;
   height?: number;
 };

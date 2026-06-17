@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -11,10 +11,62 @@ import {
 
 import type { MemoryMedia, MemoryMediaKind } from "@may/core";
 
-import { persistPickedAsset } from "../services/localMedia";
+import {
+  persistPickedAsset,
+  persistRecordedAudio,
+} from "../services/localMedia";
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "Something went wrong.";
+
+const recordingWaveformBarCount = 38;
+const recordingPreviewBarCount = 6;
+const idleRecordingWaveformPreview = Array.from(
+  { length: recordingPreviewBarCount },
+  (_, index) => 0.18 + (index % 3) * 0.08,
+);
+
+const clamp = (value: number, min = 0, max = 1) =>
+  Math.max(min, Math.min(max, value));
+
+const meteringToPeak = (metering: number) => {
+  if (!Number.isFinite(metering)) {
+    return 0;
+  }
+
+  if (metering >= 0 && metering <= 1) {
+    return clamp(metering);
+  }
+
+  const normalizedDb = (clamp(metering, -60, 0) + 60) / 60;
+  return clamp(Math.pow(normalizedDb, 1.35));
+};
+
+const finalizeWaveformPeaks = (samples: number[]) => {
+  if (samples.length === 0) {
+    return undefined;
+  }
+
+  const bucketCount = recordingWaveformBarCount;
+  const peaks = Array.from({ length: bucketCount }, (_, index) => {
+    const start = Math.floor((index * samples.length) / bucketCount);
+    const end = Math.max(
+      start + 1,
+      Math.floor(((index + 1) * samples.length) / bucketCount),
+    );
+    const bucket = samples.slice(start, end);
+    return bucket.length > 0 ? Math.max(...bucket) : 0;
+  });
+  const maxPeak = Math.max(...peaks);
+
+  if (maxPeak <= 0.001) {
+    return peaks.map(() => 0);
+  }
+
+  return peaks.map((peak) =>
+    Number((peak > 0 ? Math.max(0.08, peak / maxPeak) : 0).toFixed(3)),
+  );
+};
 
 /**
  * Owns a single memory draft: its text, attachments, and the camera / library /
@@ -34,8 +86,14 @@ export function useComposerDraft(initial?: {
   const audioRecorder = useAudioRecorder({
     ...RecordingPresets.HIGH_QUALITY,
     directory: "document",
+    isMeteringEnabled: true,
   });
-  const recorderState = useAudioRecorderState(audioRecorder);
+  const recorderState = useAudioRecorderState(audioRecorder, 80);
+  const waveformSamplesRef = useRef<number[]>([]);
+  const lastWaveformSampleAtMsRef = useRef(0);
+  const [recordingWaveformPreview, setRecordingWaveformPreview] = useState<
+    number[]
+  >(idleRecordingWaveformPreview);
 
   useEffect(() => {
     const prepareAudio = async () => {
@@ -50,6 +108,31 @@ export function useComposerDraft(initial?: {
     };
     prepareAudio().catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!recorderState.isRecording) {
+      return;
+    }
+
+    const metering = recorderState.metering;
+    const durationMs = recorderState.durationMillis ?? 0;
+    if (
+      typeof metering !== "number" ||
+      !Number.isFinite(metering) ||
+      durationMs - lastWaveformSampleAtMsRef.current < 45
+    ) {
+      return;
+    }
+
+    const peak = meteringToPeak(metering);
+    lastWaveformSampleAtMsRef.current = durationMs;
+    waveformSamplesRef.current.push(peak);
+    setRecordingWaveformPreview((current) => [...current.slice(1), peak]);
+  }, [
+    recorderState.durationMillis,
+    recorderState.isRecording,
+    recorderState.metering,
+  ]);
 
   const addPickedAsset = useCallback(
     async (asset: ImagePicker.ImagePickerAsset, kind: MemoryMediaKind) => {
@@ -135,24 +218,27 @@ export function useComposerDraft(initial?: {
         return;
       }
       if (recorderState.isRecording) {
+        const durationMs = recorderState.durationMillis ?? 0;
+        const waveformPeaks = finalizeWaveformPeaks(waveformSamplesRef.current);
         await audioRecorder.stop();
         const recordingUri = audioRecorder.uri;
+        waveformSamplesRef.current = [];
+        lastWaveformSampleAtMsRef.current = 0;
+        setRecordingWaveformPreview(idleRecordingWaveformPreview);
         if (!recordingUri) {
           return;
         }
-        setAttachments((current) => [
-          ...current,
-          {
-            id: `media_${Date.now().toString(36)}`,
-            kind: "audio",
-            uri: recordingUri,
-            durationMs: recorderState.durationMillis ?? 0,
-            mimeType: "audio/m4a",
-            fileName: `voice-${Date.now()}.m4a`,
-          },
-        ]);
+        const persisted = await persistRecordedAudio(
+          recordingUri,
+          durationMs,
+          waveformPeaks,
+        );
+        setAttachments((current) => [...current, persisted]);
         return;
       }
+      waveformSamplesRef.current = [];
+      lastWaveformSampleAtMsRef.current = 0;
+      setRecordingWaveformPreview(idleRecordingWaveformPreview);
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
     } catch (error) {
@@ -179,6 +265,7 @@ export function useComposerDraft(initial?: {
     isPicking,
     isRecording: recorderState.isRecording,
     pickFromLibrary,
+    recordingWaveformPreview,
     removeAttachment,
     reset,
     setBody,

@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import {
-  Pressable,
   StyleSheet,
   Text,
   View,
@@ -12,6 +11,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { ChevronLeft } from "lucide-react-native";
 
 import { gradients, palette, radius, shadow } from "../theme";
+import { HapticPressable as Pressable } from "./HapticPressable";
 
 type ExpoGlassEffectModule = typeof import("expo-glass-effect");
 type NativeGlassView = ExpoGlassEffectModule["GlassView"];

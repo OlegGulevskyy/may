@@ -32,6 +32,37 @@ export const persistPickedAsset = async (
   };
 };
 
+export const persistRecordedAudio = async (
+  uri: string,
+  durationMs: number,
+  waveformPeaks?: number[],
+): Promise<MemoryMedia> => {
+  const id = createId("media");
+  const extension = extensionFromMimeType("audio/mp4") ?? "m4a";
+  const destination = `${mediaDirectory}${id}.${extension}`;
+
+  await FileSystem.makeDirectoryAsync(mediaDirectory, { intermediates: true });
+  await FileSystem.copyAsync({
+    from: uri,
+    to: destination,
+  });
+
+  const media: MemoryMedia = {
+    id,
+    kind: "audio",
+    uri: destination,
+    durationMs,
+    fileName: `${id}.${extension}`,
+    mimeType: "audio/mp4",
+  };
+
+  if (waveformPeaks) {
+    media.waveformPeaks = waveformPeaks;
+  }
+
+  return media;
+};
+
 const getExtension = (asset: ImagePickerAsset, kind: MemoryMediaKind) => {
   const fromUri = asset.uri.split("?")[0]?.split(".").pop();
   const fromFileName = asset.fileName?.split(".").pop();
@@ -68,6 +99,7 @@ const extensionFromMimeType = (mimeType?: string) => {
     case "video/quicktime":
       return "mov";
     case "audio/m4a":
+    case "audio/mp4":
     case "audio/x-m4a":
       return "m4a";
     default:
@@ -81,7 +113,7 @@ const defaultMimeType = (kind: MemoryMediaKind, extension: string) => {
   }
 
   if (kind === "audio") {
-    return "audio/m4a";
+    return "audio/mp4";
   }
 
   switch (extension) {

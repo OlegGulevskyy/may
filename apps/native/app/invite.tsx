@@ -4,7 +4,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   Share,
   StyleSheet,
@@ -25,6 +24,7 @@ import {
   PrimaryButton,
   ScreenBackground,
 } from "../src/ui/Glass";
+import { HapticPressable as Pressable } from "../src/ui/HapticPressable";
 import { SplashScreen } from "../src/ui/Splash";
 import { palette, radius } from "../src/theme";
 

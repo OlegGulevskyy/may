@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import {
   Alert,
@@ -23,9 +23,10 @@ import { palette } from "../src/theme";
 export default function Join() {
   const router = useRouter();
   const params = useLocalSearchParams<{ code?: string }>();
-  const { authStatus, isRestoringSession, joinWithCode } = useAppState();
+  const { authStatus, isRestoringSession, joinWithCode, profile } =
+    useAppState();
 
-  const [yourName, setYourName] = useState("");
+  const [yourName, setYourName] = useState(profile?.displayName ?? "");
   const [code, setCode] = useState(
     params.code ? normalizeInviteCode(params.code) : "",
   );
@@ -35,6 +36,12 @@ export default function Join() {
     () => yourName.trim().length > 0 && code.trim().length > 0,
     [code, yourName],
   );
+
+  useEffect(() => {
+    if (!yourName && profile?.displayName) {
+      setYourName(profile.displayName);
+    }
+  }, [profile?.displayName, yourName]);
 
   if (authStatus === "loading" || isRestoringSession) {
     return <SplashScreen />;
@@ -95,7 +102,7 @@ export default function Join() {
             <View style={styles.form}>
               <Field
                 autoCapitalize="words"
-                autoFocus
+                autoFocus={!profile?.displayName}
                 label="Your name"
                 onChangeText={setYourName}
                 placeholder="e.g. Alex"
@@ -103,6 +110,7 @@ export default function Join() {
               />
               <Field
                 autoCapitalize="characters"
+                autoFocus={Boolean(profile?.displayName)}
                 label="Invite code"
                 onChangeText={(value) => setCode(normalizeInviteCode(value))}
                 placeholder="MAY-XXXXX"

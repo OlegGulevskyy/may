@@ -24,6 +24,8 @@ import {
   joinRemoteFamilyWithCode,
   loadRemoteSessionForCurrentUser,
   subscribeToRemoteFamily,
+  switchRemoteFamily,
+  type UserFamilyMembership,
 } from "../services/familyBackend";
 import {
   signInWithGoogle as signInWithGoogleRemote,
@@ -40,6 +42,7 @@ import { connectGoogleDelivery as connectGoogleDeliveryRemote } from "../service
 
 const PROFILE_KEY = "may.profile.v1";
 const FAMILY_KEY = "may.family.v1";
+const FAMILY_MEMBERSHIPS_KEY = "may.family-memberships.v1";
 const ACTIVE_MEMBER_KEY = "may.active-member.v1";
 export const wallStorageKey = (familyId: string) =>
   `may.memory-wall.${familyId}.v1`;
@@ -56,6 +59,8 @@ type CreateFamilyInput = {
 
 type AuthStatus = "loading" | "signed-out" | "signed-in";
 
+export type FamilyMembership = UserFamilyMembership;
+
 type AppStateValue = {
   authStatus: AuthStatus;
   authUser: AuthUser | null;
@@ -63,6 +68,7 @@ type AppStateValue = {
   isRestoringSession: boolean;
   profile: LocalProfile | null;
   family: Family | null;
+  familyMemberships: FamilyMembership[];
   /** The member currently composing/reacting on this device. */
   activeMemberId: string | null;
   activeMember: FamilyMember | null;
@@ -75,6 +81,7 @@ type AppStateValue = {
   connectGoogleDelivery: () => Promise<void>;
   joinWithCode: (input: { yourName: string; code: string }) => Promise<boolean>;
   setActiveMemberId: (memberId: string) => void;
+  switchFamily: (familyId: string) => Promise<void>;
   reset: () => void;
 };
 
@@ -86,6 +93,11 @@ const getErrorMessage = (error: unknown) =>
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
+const sortFamilyMemberships = (memberships: FamilyMembership[]) =>
+  [...memberships].sort((first, second) =>
+    first.joinedAt.localeCompare(second.joinedAt),
+  );
+
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
@@ -93,6 +105,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [isRestoringSession, setIsRestoringSession] = useState(false);
   const [profile, setProfile] = useState<LocalProfile | null>(null);
   const [family, setFamily] = useState<Family | null>(null);
+  const [familyMemberships, setFamilyMemberships] = useState<
+    FamilyMembership[]
+  >([]);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [activeMemberId, setActiveMemberIdState] = useState<string | null>(
     null,
@@ -102,12 +117,18 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     try {
       const storedProfile = getLocalString(PROFILE_KEY);
       const storedFamily = getLocalString(FAMILY_KEY);
+      const storedFamilyMemberships = getLocalString(FAMILY_MEMBERSHIPS_KEY);
       const storedActive = getLocalString(ACTIVE_MEMBER_KEY);
       if (storedProfile) {
         setProfile(JSON.parse(storedProfile) as LocalProfile);
       }
       if (storedFamily) {
         setFamily(JSON.parse(storedFamily) as Family);
+      }
+      if (storedFamilyMemberships) {
+        setFamilyMemberships(
+          JSON.parse(storedFamilyMemberships) as FamilyMembership[],
+        );
       }
       if (storedActive) {
         setActiveMemberIdState(storedActive);
@@ -129,6 +150,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             setIsRestoringSession(false);
             setProfile(null);
             setFamily(null);
+            setFamilyMemberships([]);
             setActiveMemberIdState(null);
             return;
           }
@@ -141,6 +163,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               if (!remoteSession) {
                 setProfile(null);
                 setFamily(null);
+                setFamilyMemberships([]);
                 setActiveMemberIdState(null);
                 return;
               }
@@ -148,6 +171,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               setSyncError(null);
               setProfile(remoteSession.profile);
               setFamily(remoteSession.family);
+              setFamilyMemberships(remoteSession.familyMemberships);
               setActiveMemberIdState(remoteSession.activeMemberId);
             })
             .catch((error) => setSyncError(getErrorMessage(error)))
@@ -178,6 +202,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       removeLocalItem(FAMILY_KEY);
     }
   }, [hydrated, family]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    if (familyMemberships.length > 0) {
+      setLocalString(FAMILY_MEMBERSHIPS_KEY, JSON.stringify(familyMemberships));
+    } else {
+      removeLocalItem(FAMILY_MEMBERSHIPS_KEY);
+    }
+  }, [familyMemberships, hydrated]);
 
   useEffect(() => {
     if (!hydrated) {
@@ -233,6 +268,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         setSyncError(null);
         setProfile(remoteSession.profile);
         setFamily(remoteSession.family);
+        setFamilyMemberships(remoteSession.familyMemberships);
         setActiveMemberIdState(remoteSession.activeMemberId);
         return;
       }
@@ -306,6 +342,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       if (remoteSession) {
         setSyncError(null);
         setFamily(remoteSession.family);
+        setFamilyMemberships(remoteSession.familyMemberships);
         setProfile(remoteSession.profile);
         setActiveMemberIdState(remoteSession.activeMemberId);
         return true;
@@ -314,6 +351,22 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       return false;
     },
     [],
+  );
+
+  const switchFamily = useCallback(
+    async (familyId: string) => {
+      if (family?.id === familyId) {
+        return;
+      }
+
+      const remoteSession = await switchRemoteFamily(familyId);
+      setSyncError(null);
+      setFamily(remoteSession.family);
+      setFamilyMemberships(remoteSession.familyMemberships);
+      setProfile(remoteSession.profile);
+      setActiveMemberIdState(remoteSession.activeMemberId);
+    },
+    [family?.id],
   );
 
   const signInWithGoogle = useCallback(async () => {
@@ -326,6 +379,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setAuthStatus("signed-out");
     setProfile(null);
     setFamily(null);
+    setFamilyMemberships([]);
     setActiveMemberIdState(null);
   }, []);
 
@@ -339,6 +393,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
     setProfile(null);
     setFamily(null);
+    setFamilyMemberships([]);
     setActiveMemberIdState(null);
     setSyncError(null);
   }, [family]);
@@ -352,6 +407,29 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     );
   }, [family, activeMemberId]);
 
+  const visibleFamilyMemberships = useMemo(() => {
+    if (!family || !activeMember) {
+      return familyMemberships;
+    }
+
+    const byFamilyId = new Map(
+      familyMemberships.map((membership) => [membership.familyId, membership]),
+    );
+    const existingMembership = byFamilyId.get(family.id);
+    byFamilyId.set(family.id, {
+      ...existingMembership,
+      childEmail: family.childEmail,
+      childName: family.childName,
+      familyId: family.id,
+      joinedAt: activeMember.joinedAt,
+      memberId: activeMember.id,
+      role: activeMember.role,
+      updatedAt: existingMembership?.updatedAt ?? activeMember.joinedAt,
+    });
+
+    return sortFamilyMemberships([...byFamilyId.values()]);
+  }, [activeMember, family, familyMemberships]);
+
   const value = useMemo<AppStateValue>(
     () => ({
       authStatus,
@@ -360,6 +438,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       isRestoringSession,
       profile,
       family,
+      familyMemberships: visibleFamilyMemberships,
       activeMemberId,
       activeMember,
       isReady: authStatus === "signed-in" && Boolean(family && activeMemberId),
@@ -371,6 +450,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       connectGoogleDelivery,
       joinWithCode,
       setActiveMemberId,
+      switchFamily,
       reset,
     }),
     [
@@ -380,6 +460,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       isRestoringSession,
       profile,
       family,
+      visibleFamilyMemberships,
       activeMemberId,
       activeMember,
       syncError,
@@ -390,6 +471,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       connectGoogleDelivery,
       joinWithCode,
       setActiveMemberId,
+      switchFamily,
       reset,
     ],
   );

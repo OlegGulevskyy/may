@@ -30,6 +30,15 @@ service cloud.firestore {
     match /users/{userId} {
       allow read, create, update: if signedIn() && request.auth.uid == userId;
       allow delete: if false;
+
+      match /families/{familyId} {
+        allow read: if signedIn() && request.auth.uid == userId;
+        allow create, update: if signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.familyId == familyId
+          && request.resource.data.memberId == request.auth.uid;
+        allow delete: if false;
+      }
     }
 
     match /families/{familyId} {
@@ -38,7 +47,8 @@ service cloud.firestore {
       allow update, delete: if false;
 
       match /members/{memberId} {
-        allow read: if familyMember(familyId);
+        allow read: if familyMember(familyId)
+          || (signedIn() && request.auth.uid == memberId);
         allow create, update: if signedIn() && request.auth.uid == memberId;
         allow delete: if false;
       }

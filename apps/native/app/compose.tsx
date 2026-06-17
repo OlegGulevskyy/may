@@ -1,9 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Animated,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -30,9 +38,10 @@ import {
 import { useComposerDraft } from "../src/hooks/useComposerDraft";
 import { useAppState } from "../src/state/AppState";
 import { useMemoryWallContext } from "../src/state/MemoryWallProvider";
+import { AudioMediaPlayer } from "../src/ui/AudioMediaPlayer";
 import { ScreenBackground } from "../src/ui/Glass";
+import { HapticPressable as Pressable } from "../src/ui/HapticPressable";
 import { SplashScreen } from "../src/ui/Splash";
-import { tapFeedback } from "../src/ui/haptics";
 import { palette, radius, shadow } from "../src/theme";
 
 const mediaTint: Record<MemoryMediaKind, string> = {
@@ -287,6 +296,7 @@ export default function Compose() {
     isPicking,
     isRecording,
     pickFromLibrary,
+    recordingWaveformPreview,
     removeAttachment,
     reset,
     toggleRecording,
@@ -468,7 +478,6 @@ export default function Compose() {
     if (!canSubmit) {
       return;
     }
-    tapFeedback();
     setIsSubmitting(true);
 
     submittedRef.current = true;
@@ -651,11 +660,13 @@ export default function Compose() {
               />
               <ToolButton
                 active={isRecording}
+                activeLabel="Recording"
                 icon={
                   <Mic color={isRecording ? "#fff" : palette.ink} size={21} />
                 }
                 label={isRecording ? "Stop recording" : "Record a voice note"}
                 onPress={toggleRecording}
+                waveformPeaks={recordingWaveformPreview}
               />
             </View>
 
@@ -680,16 +691,20 @@ export default function Compose() {
 
 function ToolButton({
   active,
+  activeLabel,
   disabled,
   icon,
   label,
   onPress,
+  waveformPeaks,
 }: {
   active?: boolean;
+  activeLabel?: string;
   disabled?: boolean;
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   onPress: () => void;
+  waveformPeaks?: number[];
 }) {
   return (
     <Pressable
@@ -704,8 +719,79 @@ function ToolButton({
         pressed && !disabled ? styles.pressed : null,
       ]}
     >
-      {icon}
+      {active && activeLabel ? (
+        <View style={styles.recordingButtonContent}>
+          {icon}
+          <Text style={styles.recordingButtonText}>{activeLabel}</Text>
+          <RecordingWaveform peaks={waveformPeaks ?? []} />
+        </View>
+      ) : (
+        icon
+      )}
     </Pressable>
+  );
+}
+
+function RecordingWaveform({ peaks }: { peaks: number[] }) {
+  const phase = useRef(new Animated.Value(0)).current;
+  const bars = useMemo(() => {
+    const fallback = [0.2, 0.48, 0.72, 0.42, 0.62];
+    const source = peaks.length > 0 ? peaks : fallback;
+
+    return Array.from({ length: 5 }, (_, index) => {
+      const peak = source[Math.max(0, source.length - 5 + index)] ?? 0;
+      return Math.max(0.18, Math.min(1, peak));
+    });
+  }, [peaks]);
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.timing(phase, {
+        duration: 760,
+        easing: Easing.inOut(Easing.sin),
+        toValue: 1,
+        useNativeDriver: true,
+      }),
+    );
+
+    animation.start();
+
+    return () => {
+      animation.stop();
+      phase.setValue(0);
+    };
+  }, [phase]);
+
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={styles.recordingWaveform}
+    >
+      {bars.map((peak, index) => {
+        const scaleY = phase.interpolate({
+          inputRange: [0, 0.5, 1],
+          outputRange: [
+            0.7 + ((index + 1) % 2) * 0.12,
+            1.18 - (index % 3) * 0.09,
+            0.76 + (index % 2) * 0.16,
+          ],
+        });
+
+        return (
+          <Animated.View
+            key={`recording-bar-${index}`}
+            style={[
+              styles.recordingWaveformBar,
+              {
+                height: 7 + peak * 12,
+                transform: [{ scaleY }],
+              },
+            ]}
+          />
+        );
+      })}
+    </View>
   );
 }
 
@@ -743,6 +829,26 @@ function AttachmentPreview({
   attachment: MemoryMedia;
   onRemove: () => void;
 }) {
+  if (attachment.kind === "audio") {
+    return (
+      <View style={styles.audioAttachment}>
+        <AudioMediaPlayer
+          media={attachment}
+          style={styles.audioAttachmentPlayer}
+        />
+        <Pressable
+          accessibilityLabel="Remove voice note"
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={onRemove}
+          style={styles.audioAttachmentRemove}
+        >
+          <Trash2 color={palette.inkMuted} size={19} />
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.attachment}>
       {attachment.kind === "image" ? (
@@ -873,6 +979,24 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 12,
   },
+  audioAttachment: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: 10,
+    width: "100%",
+  },
+  audioAttachmentPlayer: {
+    flex: 1,
+    height: 76,
+    minWidth: 0,
+  },
+  audioAttachmentRemove: {
+    alignItems: "center",
+    height: 46,
+    justifyContent: "center",
+    marginTop: 7,
+    width: 36,
+  },
   attachment: {
     height: 92,
     width: 92,
@@ -932,7 +1056,9 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   tools: {
+    alignItems: "center",
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 12,
   },
   toolButton: {
@@ -944,7 +1070,33 @@ const styles = StyleSheet.create({
     width: 50,
   },
   toolButtonActive: {
-    backgroundColor: palette.berry,
+    backgroundColor: palette.ink,
+    paddingHorizontal: 10,
+    width: 140,
+  },
+  recordingButtonContent: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+    justifyContent: "center",
+  },
+  recordingButtonText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  recordingWaveform: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 2,
+    height: 22,
+    justifyContent: "center",
+    width: 25,
+  },
+  recordingWaveformBar: {
+    backgroundColor: "rgba(255,255,255,0.82)",
+    borderRadius: 2,
+    width: 3,
   },
   sendButton: {
     alignItems: "center",

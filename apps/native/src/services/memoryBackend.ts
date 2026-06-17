@@ -205,7 +205,7 @@ const mediaContentTypeFromExtension = (media: MemoryMedia) => {
     case "mp4":
       return "video/mp4";
     case "m4a":
-      return "audio/m4a";
+      return "audio/mp4";
     default:
       return undefined;
   }
@@ -221,7 +221,7 @@ const mediaContentType = (media: MemoryMedia) => {
   }
   switch (media.kind) {
     case "audio":
-      return "audio/m4a";
+      return "audio/mp4";
     case "video":
       return "video/mp4";
     case "image":

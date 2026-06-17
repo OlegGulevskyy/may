@@ -53,7 +53,7 @@ export const buildSampleMemories = ({
           uri: "demo://laugh",
           durationMs: 9000,
           fileName: "first-laugh.m4a",
-          mimeType: "audio/m4a",
+          mimeType: "audio/mp4",
         },
       ],
       comments: [],
