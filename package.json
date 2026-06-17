@@ -5,6 +5,7 @@
     "build": "turbo run build",
     "clean": "turbo run clean && rm -rf node_modules",
     "deploy:fns": "pnpm --filter functions build && pnpm dlx firebase-tools deploy --only functions",
+    "native:deploy:prod": "cd apps/native && pnpm dlx eas-cli@latest build --platform ios --profile production --local --output ../../builds/Dinomay.ipa && pnpm dlx eas-cli@latest submit --platform ios --profile production --path ../../builds/Dinomay.ipa",
     "submit:ios": "cd apps/native && eas submit --platform ios",
     "firebase:reauth": "pnpm dlx firebase-tools login --reauth",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\" --ignore-path .gitignore"
