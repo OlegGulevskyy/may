@@ -1,13 +1,28 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Alert, StyleSheet, Text, View } from "react-native";
 import {
+  Alert,
+  AppState as NativeAppState,
+  Modal,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
+import {
+  Bell,
+  BellOff,
+  CalendarDays,
+  Camera,
   Check,
   ChevronRight,
+  Clock,
   CloudUpload,
   HardDrive,
+  Image as ImageIcon,
   LogOut,
   MailCheck,
   MailPlus,
+  Mic,
   Trash2,
   UserPlus,
   Users,
@@ -22,9 +37,54 @@ import {
   clearImageCache,
   getImageCacheSizeBytes,
 } from "../services/imageCache";
+import {
+  formatMemoryNudgeCadence,
+  formatMemoryNudgeSummary,
+  formatMemoryNudgeWindow,
+  memoryNudgeCadenceDays,
+  type MemoryNudgeScheduleState,
+  type MemoryNudgeSettings,
+} from "../services/memoryNudges";
+import {
+  getAppPermissionSummaries,
+  openAppPermissionSettings,
+  permissionNeedsSystemSettings,
+  permissionStatusLabel,
+  requestAppPermission,
+  type AppPermissionId,
+  type AppPermissionSummary,
+  type AppPermissionStatus,
+} from "../services/permissions";
 import { palette, radius } from "../theme";
 
 const maxCcEmailCount = 10;
+
+const initialPermissionSummaries: AppPermissionSummary[] = [
+  {
+    canAskAgain: true,
+    id: "notifications",
+    label: "Notifications",
+    status: "undetermined",
+  },
+  {
+    canAskAgain: true,
+    id: "microphone",
+    label: "Audio recording",
+    status: "undetermined",
+  },
+  {
+    canAskAgain: true,
+    id: "photoLibrary",
+    label: "Photo library",
+    status: "undetermined",
+  },
+  {
+    canAskAgain: true,
+    id: "camera",
+    label: "Camera",
+    status: "undetermined",
+  },
+];
 
 export function SettingsPanel({
   activeFamilyId,
@@ -32,29 +92,48 @@ export function SettingsPanel({
   deliveryCcEmails,
   familyMemberships,
   googleDeliveryConnection,
+  isMemoryNudgeBusy,
+  memoryNudgeScheduleState,
+  memoryNudgeSettings,
   onConnectGoogleDelivery,
   onInvite,
   onJoinFamily,
+  onRefreshMemoryNudgeSchedule,
+  onSetMemoryNudgesEnabled,
   onSignOut,
   onSwitchFamily,
   onUpdateDeliveryCcEmails,
+  onUpdateMemoryNudgeSettings,
 }: {
   activeFamilyId: string;
   childName: string;
   deliveryCcEmails?: string[];
   familyMemberships: FamilyMembership[];
   googleDeliveryConnection?: GoogleDeliveryConnection;
+  isMemoryNudgeBusy: boolean;
+  memoryNudgeScheduleState: MemoryNudgeScheduleState;
+  memoryNudgeSettings: MemoryNudgeSettings;
   onConnectGoogleDelivery: () => Promise<unknown>;
   onInvite: () => void;
   onJoinFamily: () => void;
+  onRefreshMemoryNudgeSchedule: () => Promise<unknown>;
+  onSetMemoryNudgesEnabled: (enabled: boolean) => Promise<boolean>;
   onSignOut: () => void;
   onSwitchFamily: (familyId: string) => Promise<unknown>;
   onUpdateDeliveryCcEmails: (ccEmails: string[]) => Promise<unknown>;
+  onUpdateMemoryNudgeSettings: (
+    settings: Partial<MemoryNudgeSettings>,
+  ) => Promise<unknown>;
 }) {
   const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
   const [cacheBusy, setCacheBusy] = useState(false);
   const [ccBusy, setCcBusy] = useState(false);
   const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const [permissions, setPermissions] = useState<AppPermissionSummary[]>(
+    initialPermissionSummaries,
+  );
+  const [permissionsBusy, setPermissionsBusy] = useState(false);
+  const [timeWindowPickerVisible, setTimeWindowPickerVisible] = useState(false);
   const [switchingFamilyId, setSwitchingFamilyId] = useState<string | null>(
     null,
   );
@@ -96,6 +175,33 @@ export function SettingsPanel({
       cancelled = true;
     };
   }, []);
+
+  const loadPermissions = useCallback(async () => {
+    setPermissionsBusy(true);
+    try {
+      setPermissions(await getAppPermissionSummaries());
+    } catch (error) {
+      console.warn("[MaySync] permissions status failed", {
+        error: getErrorMessage(error),
+      });
+    } finally {
+      setPermissionsBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPermissions();
+  }, [loadPermissions]);
+
+  useEffect(() => {
+    const subscription = NativeAppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        loadPermissions();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [loadPermissions]);
 
   const confirmClearImageCache = useCallback(() => {
     Alert.alert(
@@ -218,6 +324,97 @@ export function SettingsPanel({
     [activeFamilyId, onSwitchFamily, switchingFamilyId],
   );
 
+  const toggleMemoryNudges = useCallback(() => {
+    const enabling = !memoryNudgeSettings.enabled;
+
+    onSetMemoryNudgesEnabled(enabling)
+      .then((enabled) => {
+        if (enabling && !enabled) {
+          Alert.alert(
+            "Notifications are off",
+            "Turn on notifications for Dinomay to schedule memory reminders.",
+          );
+        }
+        return loadPermissions();
+      })
+      .catch((error) =>
+        Alert.alert("Could not update reminders", getErrorMessage(error)),
+      );
+  }, [loadPermissions, memoryNudgeSettings.enabled, onSetMemoryNudgesEnabled]);
+
+  const editMemoryNudgeCadence = useCallback(() => {
+    Alert.alert("Reminder cadence", "The week runs Monday to Sunday.", [
+      ...memoryNudgeCadenceDays.map((cadenceDays) => ({
+        onPress: () =>
+          onUpdateMemoryNudgeSettings({ cadenceDays }).catch((error) =>
+            Alert.alert("Could not update cadence", getErrorMessage(error)),
+          ),
+        text: formatMemoryNudgeCadence(cadenceDays),
+      })),
+      { style: "cancel" as const, text: "Cancel" },
+    ]);
+  }, [onUpdateMemoryNudgeSettings]);
+
+  const editMemoryNudgeWindow = useCallback(() => {
+    setTimeWindowPickerVisible(true);
+  }, []);
+
+  const saveMemoryNudgeWindow = useCallback(
+    (
+      window: Pick<
+        MemoryNudgeSettings,
+        "endHour" | "endMinute" | "startHour" | "startMinute"
+      >,
+    ) => {
+      onUpdateMemoryNudgeSettings(window)
+        .then(() => setTimeWindowPickerVisible(false))
+        .catch((error) =>
+          Alert.alert("Could not update time window", getErrorMessage(error)),
+        );
+    },
+    [onUpdateMemoryNudgeSettings],
+  );
+
+  const managePermission = useCallback(
+    (permission: AppPermissionSummary) => {
+      if (permissionNeedsSystemSettings(permission)) {
+        Alert.alert(
+          `${permission.label} permission`,
+          "iOS manages changing or revoking this permission in Settings.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              onPress: () => {
+                openAppPermissionSettings().catch((error) =>
+                  Alert.alert(
+                    "Could not open Settings",
+                    getErrorMessage(error),
+                  ),
+                );
+              },
+              text: "Open Settings",
+            },
+          ],
+        );
+        return;
+      }
+
+      setPermissionsBusy(true);
+      requestAppPermission(permission.id)
+        .then(() => loadPermissions())
+        .then(() =>
+          permission.id === "notifications"
+            ? onRefreshMemoryNudgeSchedule()
+            : undefined,
+        )
+        .catch((error) =>
+          Alert.alert("Could not update permission", getErrorMessage(error)),
+        )
+        .finally(() => setPermissionsBusy(false));
+    },
+    [loadPermissions, onRefreshMemoryNudgeSchedule],
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -296,6 +493,60 @@ export function SettingsPanel({
         </Surface>
       </Section>
 
+      <Section title="Memory nudges">
+        <Surface style={styles.group}>
+          <Row
+            disabled={isMemoryNudgeBusy}
+            icon={
+              memoryNudgeSettings.enabled ? (
+                <Bell color={palette.moss} size={20} />
+              ) : (
+                <BellOff color={palette.inkMuted} size={20} />
+              )
+            }
+            label="Random reminders"
+            onPress={toggleMemoryNudges}
+            showChevron
+            value={
+              isMemoryNudgeBusy
+                ? "Saving"
+                : memoryNudgePrimaryStatus(
+                    memoryNudgeSettings,
+                    memoryNudgeScheduleState,
+                  )
+            }
+          />
+          <Row
+            disabled={isMemoryNudgeBusy}
+            divider
+            icon={<CalendarDays color={palette.moss} size={20} />}
+            label="Cadence"
+            onPress={editMemoryNudgeCadence}
+            showChevron
+            value={formatMemoryNudgeCadence(memoryNudgeSettings.cadenceDays)}
+          />
+          <Row
+            disabled={isMemoryNudgeBusy}
+            divider
+            icon={<Clock color={palette.berry} size={20} />}
+            label="Time window"
+            onPress={editMemoryNudgeWindow}
+            showChevron
+            value={formatMemoryNudgeWindow(memoryNudgeSettings)}
+          />
+          {memoryNudgeSettings.enabled ? (
+            <View style={styles.groupFooter}>
+              <Text style={styles.groupFooterText}>
+                {memoryNudgeDetail(
+                  memoryNudgeSettings,
+                  memoryNudgeScheduleState,
+                )}
+              </Text>
+            </View>
+          ) : null}
+        </Surface>
+      </Section>
+
       <Section title="Delivery">
         <Surface style={styles.group}>
           <Row
@@ -313,7 +564,7 @@ export function SettingsPanel({
             showChevron
             trailingAccessory={
               deliveryConnected && !deliveryBusy ? (
-                <Check color={palette.moss} size={18} />
+                <StatusChip label="Connected" />
               ) : undefined
             }
             value={
@@ -338,6 +589,38 @@ export function SettingsPanel({
               ccBusy ? "Saving" : deliveryCcEmails?.length ? "Edit" : "Add"
             }
           />
+        </Surface>
+      </Section>
+
+      <Section title="Permissions">
+        <Surface style={styles.group}>
+          {permissions.map((permission, index) => (
+            <Row
+              disabled={permissionsBusy}
+              divider={index > 0}
+              icon={permissionIcon(permission.id, permission.status)}
+              key={permission.id}
+              label={permission.label}
+              onPress={() => managePermission(permission)}
+              showChevron
+              trailingAccessory={
+                permissionsBusy ? undefined : permission.status === "granted" ||
+                  permission.status === "limited" ? (
+                  <StatusChip
+                    label={permissionStatusLabel(permission.status)}
+                  />
+                ) : undefined
+              }
+              value={
+                permissionsBusy
+                  ? "Checking"
+                  : permission.status === "granted" ||
+                      permission.status === "limited"
+                    ? undefined
+                    : permissionStatusLabel(permission.status)
+              }
+            />
+          ))}
         </Surface>
       </Section>
 
@@ -374,6 +657,12 @@ export function SettingsPanel({
           />
         </Surface>
       </Section>
+      <TimeWindowPicker
+        onCancel={() => setTimeWindowPickerVisible(false)}
+        onSave={saveMemoryNudgeWindow}
+        settings={memoryNudgeSettings}
+        visible={timeWindowPickerVisible}
+      />
     </View>
   );
 }
@@ -447,6 +736,141 @@ function Row({
   );
 }
 
+function StatusChip({ label }: { label: string }) {
+  return (
+    <View style={styles.statusChip}>
+      <Check color={palette.moss} size={13} strokeWidth={3} />
+      <Text numberOfLines={1} style={styles.statusChipText}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function TimeWindowPicker({
+  onCancel,
+  onSave,
+  settings,
+  visible,
+}: {
+  onCancel: () => void;
+  onSave: (
+    window: Pick<
+      MemoryNudgeSettings,
+      "endHour" | "endMinute" | "startHour" | "startMinute"
+    >,
+  ) => void;
+  settings: MemoryNudgeSettings;
+  visible: boolean;
+}) {
+  const [startDate, setStartDate] = useState(() =>
+    timeDate(settings.startHour, settings.startMinute),
+  );
+  const [endDate, setEndDate] = useState(() =>
+    timeDate(settings.endHour, settings.endMinute),
+  );
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setStartDate(timeDate(settings.startHour, settings.startMinute));
+    setEndDate(timeDate(settings.endHour, settings.endMinute));
+  }, [
+    settings.endHour,
+    settings.endMinute,
+    settings.startHour,
+    settings.startMinute,
+    visible,
+  ]);
+
+  const save = useCallback(() => {
+    const start = timeParts(startDate);
+    const end = timeParts(endDate);
+
+    if (end.totalMinutes < start.totalMinutes) {
+      Alert.alert(
+        "Check time window",
+        "Choose a To time that is later than the From time.",
+      );
+      return;
+    }
+
+    onSave({
+      endHour: end.hour,
+      endMinute: end.minute,
+      startHour: start.hour,
+      startMinute: start.minute,
+    });
+  }, [endDate, onSave, startDate]);
+
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={onCancel}
+      transparent
+      visible={visible}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.timePickerSheet}>
+          <View style={styles.timePickerHeader}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={onCancel}
+              style={styles.timePickerAction}
+            >
+              <Text style={styles.timePickerActionText}>Cancel</Text>
+            </Pressable>
+            <Text style={styles.timePickerTitle}>Time window</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={save}
+              style={styles.timePickerAction}
+            >
+              <Text style={[styles.timePickerActionText, styles.doneText]}>
+                Done
+              </Text>
+            </Pressable>
+          </View>
+          <View style={styles.timePickerGrid}>
+            <View style={styles.timePickerPanel}>
+              <Text style={styles.timePickerLabel}>From</Text>
+              <DateTimePicker
+                display="spinner"
+                mode="time"
+                onChange={(_, date) => {
+                  if (date) {
+                    setStartDate(date);
+                  }
+                }}
+                textColor={palette.ink}
+                themeVariant="light"
+                value={startDate}
+              />
+            </View>
+            <View style={styles.timePickerPanel}>
+              <Text style={styles.timePickerLabel}>To</Text>
+              <DateTimePicker
+                display="spinner"
+                mode="time"
+                onChange={(_, date) => {
+                  if (date) {
+                    setEndDate(date);
+                  }
+                }}
+                textColor={palette.ink}
+                themeVariant="light"
+                value={endDate}
+              />
+            </View>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function deliveryConnectionEmail(
   connection: GoogleDeliveryConnection | undefined,
 ) {
@@ -455,6 +879,110 @@ function deliveryConnectionEmail(
   }
 
   return connection.googleEmail;
+}
+
+function memoryNudgePrimaryStatus(
+  settings: MemoryNudgeSettings,
+  state: MemoryNudgeScheduleState,
+) {
+  if (!settings.enabled) {
+    return "Off";
+  }
+
+  switch (state.status) {
+    case "denied":
+    case "needs-permission":
+      return "Permission";
+    case "error":
+      return "Error";
+    case "off":
+      return "Off";
+    case "scheduled":
+      return "On";
+    case "unavailable":
+      return "Unavailable";
+  }
+}
+
+function memoryNudgeDetail(
+  settings: MemoryNudgeSettings,
+  state: MemoryNudgeScheduleState,
+) {
+  const summary = formatMemoryNudgeSummary(settings);
+
+  if (!settings.enabled) {
+    return summary;
+  }
+
+  switch (state.status) {
+    case "denied":
+      return `${summary}. Notifications are denied.`;
+    case "error":
+      return `${summary}. ${state.message}`;
+    case "needs-permission":
+      return `${summary}. Notifications are not allowed yet.`;
+    case "off":
+      return summary;
+    case "scheduled": {
+      const next = formatNextNudgeAt(state.nextNotificationAt);
+      return next ? `${summary}. Next: ${next}` : summary;
+    }
+    case "unavailable":
+      return `${summary}. Rebuild the iOS app with notifications installed.`;
+  }
+}
+
+function formatNextNudgeAt(value: string | undefined) {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  return date.toLocaleString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    weekday: "short",
+  });
+}
+
+function timeDate(hour: number, minute: number) {
+  const date = new Date(2000, 0, 1);
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
+function timeParts(date: Date) {
+  const hour = date.getHours();
+  const minute = date.getMinutes();
+  return {
+    hour,
+    minute,
+    totalMinutes: hour * 60 + minute,
+  };
+}
+
+function permissionIcon(id: AppPermissionId, status: AppPermissionStatus) {
+  const color =
+    status === "granted" || status === "limited"
+      ? palette.moss
+      : status === "denied"
+        ? palette.berry
+        : palette.inkMuted;
+
+  switch (id) {
+    case "camera":
+      return <Camera color={color} size={20} />;
+    case "microphone":
+      return <Mic color={color} size={20} />;
+    case "notifications":
+      return <Bell color={color} size={20} />;
+    case "photoLibrary":
+      return <ImageIcon color={color} size={20} />;
+  }
 }
 
 function parseEmailList(value: string) {
@@ -548,7 +1076,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     gap: 13,
-    minHeight: 60,
+    minHeight: 56,
     paddingHorizontal: 10,
   },
   rowDivider: {
@@ -583,18 +1111,18 @@ const styles = StyleSheet.create({
   rowTitle: {
     color: palette.ink,
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   rowMeta: {
     color: palette.inkMuted,
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "600",
     textTransform: "capitalize",
   },
   rowLabel: {
     color: palette.ink,
     fontSize: 16,
-    fontWeight: "800",
+    fontWeight: "700",
   },
   rowLabelDanger: {
     color: palette.berry,
@@ -602,12 +1130,38 @@ const styles = StyleSheet.create({
   rowDetail: {
     color: palette.inkMuted,
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   rowValue: {
     color: palette.inkMuted,
     fontSize: 14,
-    fontWeight: "800",
+    fontWeight: "700",
+  },
+  groupFooter: {
+    borderTopColor: "rgba(37,45,43,0.07)",
+    borderTopWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  groupFooterText: {
+    color: palette.inkMuted,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 18,
+  },
+  statusChip: {
+    alignItems: "center",
+    backgroundColor: "rgba(91,126,102,0.14)",
+    borderRadius: radius.pill,
+    flexDirection: "row",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  statusChipText: {
+    color: palette.moss,
+    fontSize: 12,
+    fontWeight: "700",
   },
   activePill: {
     alignItems: "center",
@@ -621,6 +1175,60 @@ const styles = StyleSheet.create({
   activePillText: {
     color: palette.moss,
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "700",
+  },
+  modalBackdrop: {
+    backgroundColor: "rgba(37,45,43,0.18)",
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  timePickerSheet: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 24,
+  },
+  timePickerHeader: {
+    alignItems: "center",
+    borderBottomColor: "rgba(37,45,43,0.08)",
+    borderBottomWidth: 1,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: 54,
+    paddingHorizontal: 16,
+  },
+  timePickerAction: {
+    minWidth: 64,
+    paddingVertical: 12,
+  },
+  timePickerActionText: {
+    color: palette.inkMuted,
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  doneText: {
+    color: palette.moss,
+    textAlign: "right",
+  },
+  timePickerTitle: {
+    color: palette.ink,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  timePickerGrid: {
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+  },
+  timePickerPanel: {
+    gap: 4,
+  },
+  timePickerLabel: {
+    color: palette.inkMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    paddingHorizontal: 4,
+    textTransform: "uppercase",
   },
 });

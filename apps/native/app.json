@@ -52,6 +52,7 @@
           "enableBackgroundRecording": false
         }
       ],
+      "@react-native-community/datetimepicker",
       [
         "expo-build-properties",
         {

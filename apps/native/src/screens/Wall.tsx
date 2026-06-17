@@ -70,6 +70,7 @@ import {
 } from "@may/core";
 
 import type { MemoryDraft } from "../hooks/useDrafts";
+import { useMemoryNudges } from "../hooks/useMemoryNudges";
 import { useAppState } from "../state/AppState";
 import { useMemoryWallContext } from "../state/MemoryWallProvider";
 import { GlassCard, ScreenBackground, Surface } from "../ui/Glass";
@@ -157,6 +158,18 @@ export function Wall() {
   );
   const isSolo = fam.members.length < 2;
   const inviteNudgeStorageKey = inviteNudgeDismissedKey(fam.id);
+  const {
+    isMemoryNudgeBusy,
+    memoryNudgeScheduleState,
+    memoryNudgeSettings,
+    refreshMemoryNudgeSchedule,
+    setMemoryNudgesEnabled,
+    updateMemoryNudgeSettings,
+  } = useMemoryNudges({
+    childName: fam.childName,
+    familyId: fam.id,
+    memberId,
+  });
 
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>(
     {},
@@ -449,12 +462,18 @@ export function Wall() {
               deliveryCcEmails={fam.deliveryCcEmails}
               familyMemberships={familyMemberships}
               googleDeliveryConnection={fam.deliveryConnection}
+              isMemoryNudgeBusy={isMemoryNudgeBusy}
+              memoryNudgeScheduleState={memoryNudgeScheduleState}
+              memoryNudgeSettings={memoryNudgeSettings}
               onConnectGoogleDelivery={connectGoogleDelivery}
               onInvite={() => router.push("/invite")}
               onJoinFamily={() => router.push("/join")}
+              onRefreshMemoryNudgeSchedule={refreshMemoryNudgeSchedule}
+              onSetMemoryNudgesEnabled={setMemoryNudgesEnabled}
               onSignOut={confirmSignOut}
               onSwitchFamily={switchFamily}
               onUpdateDeliveryCcEmails={updateDeliveryCcEmails}
+              onUpdateMemoryNudgeSettings={updateMemoryNudgeSettings}
             />
           </ScrollView>
         )}
