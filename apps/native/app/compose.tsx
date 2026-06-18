@@ -236,6 +236,8 @@ const inlineImageMediaIds = (segments: ComposerSegment[]) =>
       .map((segment) => segment.mediaId),
   );
 
+type ImagePlacementSource = "camera" | "library";
+
 export default function Compose() {
   const router = useRouter();
   const {
@@ -294,7 +296,8 @@ export default function Compose() {
       start: firstText?.text.length ?? 0,
     };
   });
-  const [imageMenuOpen, setImageMenuOpen] = useState(false);
+  const [imagePlacementSource, setImagePlacementSource] =
+    useState<ImagePlacementSource | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const inputRefs = useRef<Record<string, TextInputHandle | null>>({});
 
@@ -404,14 +407,42 @@ export default function Compose() {
   );
 
   const pickInlineImages = useCallback(() => {
-    setImageMenuOpen(false);
+    setImagePlacementSource(null);
     pickFromLibrary().then(insertInlineImages);
   }, [insertInlineImages, pickFromLibrary]);
 
   const pickAttachmentMedia = useCallback(() => {
-    setImageMenuOpen(false);
+    setImagePlacementSource(null);
     pickFromLibrary();
   }, [pickFromLibrary]);
+
+  const captureInlineImage = useCallback(() => {
+    setImagePlacementSource(null);
+    capture("image").then(insertInlineImages);
+  }, [capture, insertInlineImages]);
+
+  const captureAttachmentImage = useCallback(() => {
+    setImagePlacementSource(null);
+    capture("image");
+  }, [capture]);
+
+  const insertInlineMedia = useCallback(() => {
+    if (imagePlacementSource === "camera") {
+      captureInlineImage();
+      return;
+    }
+
+    pickInlineImages();
+  }, [captureInlineImage, imagePlacementSource, pickInlineImages]);
+
+  const insertAttachmentMedia = useCallback(() => {
+    if (imagePlacementSource === "camera") {
+      captureAttachmentImage();
+      return;
+    }
+
+    pickAttachmentMedia();
+  }, [captureAttachmentImage, imagePlacementSource, pickAttachmentMedia]);
 
   const removeInlineImage = useCallback(
     (segmentId: string, mediaId: string) => {
@@ -623,11 +654,16 @@ export default function Compose() {
           </ScrollView>
 
           <View style={styles.footer}>
-            {imageMenuOpen ? (
+            {imagePlacementSource ? (
               <View style={styles.insertMenu}>
                 <Pressable
+                  accessibilityLabel={
+                    imagePlacementSource === "camera"
+                      ? "Take inline photo"
+                      : "Choose inline images"
+                  }
                   accessibilityRole="button"
-                  onPress={pickInlineImages}
+                  onPress={insertInlineMedia}
                   style={({ pressed }) => [
                     styles.insertMenuItem,
                     pressed ? styles.pressed : null,
@@ -636,8 +672,13 @@ export default function Compose() {
                   <Text style={styles.insertMenuText}>Inline</Text>
                 </Pressable>
                 <Pressable
+                  accessibilityLabel={
+                    imagePlacementSource === "camera"
+                      ? "Take photo attachment"
+                      : "Choose attachment media"
+                  }
                   accessibilityRole="button"
-                  onPress={pickAttachmentMedia}
+                  onPress={insertAttachmentMedia}
                   style={({ pressed }) => [
                     styles.insertMenuItem,
                     pressed ? styles.pressed : null,
@@ -652,7 +693,11 @@ export default function Compose() {
                 disabled={isPicking}
                 icon={<Camera color={palette.ink} size={21} />}
                 label="Take a photo"
-                onPress={() => capture("image")}
+                onPress={() =>
+                  setImagePlacementSource((source) =>
+                    source === "camera" ? null : "camera",
+                  )
+                }
               />
               <ToolButton
                 disabled={isPicking}
@@ -664,7 +709,11 @@ export default function Compose() {
                 disabled={isPicking}
                 icon={<ImageIcon color={palette.ink} size={21} />}
                 label="Choose from library"
-                onPress={() => setImageMenuOpen((open) => !open)}
+                onPress={() =>
+                  setImagePlacementSource((source) =>
+                    source === "library" ? null : "library",
+                  )
+                }
               />
               <ToolButton
                 active={isRecording}

@@ -579,7 +579,7 @@ export function SettingsPanel({
           />
           <Row
             disabled={ccBusy}
-            detail={formatEmailList(deliveryCcEmails)}
+            detail={formatDeliveryCcDetail(deliveryCcEmails)}
             divider
             icon={<MailPlus color={palette.moss} size={20} />}
             label="CC addresses"
@@ -714,24 +714,35 @@ function Row({
       <View style={styles.rowIcon}>{icon}</View>
       <View style={styles.rowText}>
         <Text
+          ellipsizeMode="tail"
           numberOfLines={1}
           style={[styles.rowLabel, destructive ? styles.rowLabelDanger : null]}
         >
           {label}
         </Text>
         {detail ? (
-          <Text selectable style={styles.rowDetail}>
+          <Text ellipsizeMode="tail" numberOfLines={1} style={styles.rowDetail}>
             {detail}
           </Text>
         ) : null}
       </View>
-      {value ? (
-        <Text numberOfLines={1} style={styles.rowValue}>
-          {value}
-        </Text>
+      {value || trailingAccessory || showChevron ? (
+        <View style={styles.rowActionCluster}>
+          {value ? (
+            <Text
+              ellipsizeMode="tail"
+              numberOfLines={1}
+              style={styles.rowValue}
+            >
+              {value}
+            </Text>
+          ) : null}
+          {trailingAccessory}
+          {showChevron ? (
+            <ChevronRight color={palette.inkFaint} size={18} />
+          ) : null}
+        </View>
       ) : null}
-      {trailingAccessory}
-      {showChevron ? <ChevronRight color={palette.inkFaint} size={18} /> : null}
     </Pressable>
   );
 }
@@ -1013,6 +1024,18 @@ function formatEmailList(emails: string[] | undefined) {
   return emails?.length ? emails.join(", ") : undefined;
 }
 
+function formatDeliveryCcDetail(emails: string[] | undefined) {
+  if (!emails?.length) {
+    return undefined;
+  }
+
+  if (emails.length === 1) {
+    return emails[0];
+  }
+
+  return `${emails.length} addresses configured`;
+}
+
 function looksLikeEmail(value: string) {
   return /^\S+@\S+\.\S+$/.test(value.trim());
 }
@@ -1091,6 +1114,7 @@ const styles = StyleSheet.create({
   },
   rowIcon: {
     alignItems: "center",
+    flexShrink: 0,
     width: 24,
   },
   wallIcon: {
@@ -1107,6 +1131,7 @@ const styles = StyleSheet.create({
   rowText: {
     flex: 1,
     gap: 2,
+    minWidth: 0,
   },
   rowTitle: {
     color: palette.ink,
@@ -1132,10 +1157,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
   },
+  rowActionCluster: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexShrink: 0,
+    gap: 8,
+  },
   rowValue: {
     color: palette.inkMuted,
+    flexShrink: 1,
     fontSize: 14,
     fontWeight: "700",
+    maxWidth: 108,
   },
   groupFooter: {
     borderTopColor: "rgba(37,45,43,0.07)",
@@ -1153,6 +1186,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "rgba(91,126,102,0.14)",
     borderRadius: radius.pill,
+    flexShrink: 0,
     flexDirection: "row",
     gap: 5,
     paddingHorizontal: 9,
