@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getCountFromServer,
+  getDocsFromServer,
   limit as queryLimit,
   onSnapshot,
   orderBy,
@@ -484,6 +485,34 @@ const rewriteContentImageMap = (
   return next;
 };
 
+const getPostsCollection = (familyId: string) => {
+  const services = getSignedInServices();
+  if (!services) {
+    return null;
+  }
+
+  return {
+    postsCollection: collection(services.db, "families", familyId, "posts"),
+    services,
+  };
+};
+
+const getPostsPageQuery = (familyId: string, postLimit: number) => {
+  const posts = getPostsCollection(familyId);
+  if (!posts) {
+    return null;
+  }
+
+  return {
+    ...posts,
+    postsQuery: query(
+      posts.postsCollection,
+      orderBy("createdAt", "desc"),
+      queryLimit(postLimit + 1),
+    ),
+  };
+};
+
 const resolveThumbnailDownloadUrl = async (
   storage: FirebaseStorage,
   media: MemoryMedia,
@@ -545,24 +574,13 @@ export const subscribeToRemoteMemoryWall = ({
   }) => void;
   postLimit: number;
 }): Unsubscribe | null => {
-  const services = getSignedInServices();
-  if (!services) {
+  const postsPageQuery = getPostsPageQuery(familyId, postLimit);
+  if (!postsPageQuery) {
     return null;
   }
+  const { postsCollection, postsQuery, services } = postsPageQuery;
 
   syncLog("remote wall subscribe", { familyId, postLimit });
-
-  const postsCollection = collection(
-    services.db,
-    "families",
-    familyId,
-    "posts",
-  );
-  const postsQuery = query(
-    postsCollection,
-    orderBy("createdAt", "desc"),
-    queryLimit(postLimit + 1),
-  );
 
   return onSnapshot(
     postsQuery,
@@ -618,6 +636,63 @@ export const subscribeToRemoteMemoryWall = ({
       onError(getErrorMessage(error));
     },
   );
+};
+
+export const fetchRemoteMemoryWallPage = async ({
+  familyId,
+  postLimit,
+}: {
+  familyId: string;
+  postLimit: number;
+}) => {
+  const postsPageQuery = getPostsPageQuery(familyId, postLimit);
+  if (!postsPageQuery) {
+    return null;
+  }
+  const { postsCollection, postsQuery, services } = postsPageQuery;
+
+  syncLog("remote wall refresh starting", { familyId, postLimit });
+
+  const snapshot = await getDocsFromServer(postsQuery);
+  const visibleDocs = snapshot.docs.slice(0, postLimit);
+  const hasMore = snapshot.docs.length > postLimit;
+  const posts = visibleDocs.map((post) =>
+    toMemoryPost(post.id, familyId, post.data() as Record<string, unknown>),
+  );
+
+  const [resolvedPosts, totalPostCount] = await Promise.all([
+    Promise.all(
+      posts.map((post) => withDownloadUrls(services.storage, post)),
+    ).catch((error) => {
+      syncWarn("remote refresh media URL resolution failed", {
+        familyId,
+        message: getErrorMessage(error),
+      });
+      return posts;
+    }),
+    getCountFromServer(postsCollection)
+      .then((countSnapshot) => countSnapshot.data().count)
+      .catch((error) => {
+        syncWarn("remote refresh count failed", {
+          familyId,
+          message: getErrorMessage(error),
+        });
+        return undefined;
+      }),
+  ]);
+
+  syncLog("remote wall refresh finished", {
+    familyId,
+    hasMore,
+    loadedPostCount: resolvedPosts.length,
+    totalPostCount,
+  });
+
+  return {
+    hasMore,
+    posts: resolvedPosts,
+    totalPostCount,
+  };
 };
 
 export const saveRemoteMemoryPost = async (post: MemoryPost) => {

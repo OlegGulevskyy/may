@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppState as NativeAppState } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 
 import {
@@ -14,6 +15,7 @@ import {
 
 import { buildSampleMemories } from "../data/demoMemories";
 import {
+  fetchRemoteMemoryWallPage,
   saveRemoteMemoryPost,
   subscribeToRemoteMemoryWall,
 } from "../services/memoryBackend";
@@ -140,13 +142,16 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   const [remotePostLimit, setRemotePostLimit] = useState(wallPostPageSize);
   const [hasMorePosts, setHasMorePosts] = useState(false);
   const [isLoadingMorePosts, setIsLoadingMorePosts] = useState(false);
+  const [isRefreshingPosts, setIsRefreshingPosts] = useState(false);
   const [loadedRemotePostCount, setLoadedRemotePostCount] = useState(0);
   const [totalRemotePostCount, setTotalRemotePostCount] = useState<
     number | undefined
   >(undefined);
   const pendingRemotePosts = useRef(new Map<string, MemoryPost>());
+  const didInitialRemoteRefreshRef = useRef(false);
   const localPostIds = useRef(new Set<string>());
   const postsRef = useRef<MemoryPost[]>([]);
+  const refreshingPostsRef = useRef(false);
   const remotePostIds = useRef(new Set<string>());
   const remotePostsRef = useRef<MemoryPost[]>([]);
   const remoteSubscriptionKeyRef = useRef<string | null>(null);
@@ -161,6 +166,34 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
       return next;
     });
   }, []);
+
+  const applyRemotePosts = useCallback(
+    ({
+      hasMore,
+      posts: remotePosts,
+      totalPostCount,
+    }: {
+      hasMore: boolean;
+      posts: MemoryPost[];
+      totalPostCount?: number;
+    }) => {
+      const nextRemotePostIds = new Set(remotePosts.map((post) => post.id));
+      nextRemotePostIds.forEach((postId) =>
+        localPostIds.current.delete(postId),
+      );
+      remotePostIds.current = nextRemotePostIds;
+      remotePostsRef.current = remotePosts;
+      setHasMorePosts(hasMore);
+      setIsLoadingMorePosts(false);
+      setLoadedRemotePostCount(remotePosts.length);
+      setTotalRemotePostCount(totalPostCount);
+      setRemoteSyncEnabled(true);
+      updatePosts((current) =>
+        mergeRemotePosts(current, remotePosts, localPostIds.current),
+      );
+    },
+    [updatePosts],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -224,6 +257,7 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
 
     if (remoteSubscriptionKeyRef.current !== subscriptionKey) {
       remoteSubscriptionKeyRef.current = subscriptionKey;
+      didInitialRemoteRefreshRef.current = false;
       remotePostIds.current = new Set();
       remotePostsRef.current = [];
       pendingRemotePosts.current.clear();
@@ -254,24 +288,11 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
             setIsLoadingMorePosts(false);
           }
         },
-        onPosts: ({ hasMore, posts: remotePosts, totalPostCount }) => {
+        onPosts: (page) => {
           if (cancelled) {
             return;
           }
-          const nextRemotePostIds = new Set(remotePosts.map((post) => post.id));
-          nextRemotePostIds.forEach((postId) =>
-            localPostIds.current.delete(postId),
-          );
-          remotePostIds.current = nextRemotePostIds;
-          remotePostsRef.current = remotePosts;
-          setHasMorePosts(hasMore);
-          setIsLoadingMorePosts(false);
-          setLoadedRemotePostCount(remotePosts.length);
-          setTotalRemotePostCount(totalPostCount);
-          setRemoteSyncEnabled(true);
-          updatePosts((current) =>
-            mergeRemotePosts(current, remotePosts, localPostIds.current),
-          );
+          applyRemotePosts(page);
         },
         postLimit: remotePostLimit,
       });
@@ -295,7 +316,62 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [activeMemberId, familyId, hydrated, remotePostLimit, updatePosts]);
+  }, [activeMemberId, applyRemotePosts, familyId, hydrated, remotePostLimit]);
+
+  const refreshPosts = useCallback(async () => {
+    if (
+      !hydrated ||
+      !familyId ||
+      !activeMemberId ||
+      refreshingPostsRef.current
+    ) {
+      return;
+    }
+
+    refreshingPostsRef.current = true;
+    setIsRefreshingPosts(true);
+
+    try {
+      const page = await fetchRemoteMemoryWallPage({
+        familyId,
+        postLimit: remotePostLimit,
+      });
+
+      if (!page) {
+        setRemoteSyncEnabled(false);
+        return;
+      }
+
+      applyRemotePosts(page);
+    } catch (error) {
+      syncWarn("remote wall refresh failed", {
+        familyId,
+        message: getErrorMessage(error),
+      });
+    } finally {
+      refreshingPostsRef.current = false;
+      setIsRefreshingPosts(false);
+    }
+  }, [activeMemberId, applyRemotePosts, familyId, hydrated, remotePostLimit]);
+
+  useEffect(() => {
+    if (!hydrated || !familyId || !activeMemberId) {
+      return;
+    }
+
+    if (!didInitialRemoteRefreshRef.current) {
+      didInitialRemoteRefreshRef.current = true;
+      refreshPosts();
+    }
+
+    const subscription = NativeAppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        refreshPosts();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [activeMemberId, familyId, hydrated, refreshPosts]);
 
   const markPostSynced = useCallback(
     (savedPost: MemoryPost) => {
@@ -605,10 +681,12 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
     hydrated,
     isOnline,
     isLoadingMorePosts,
+    isRefreshingPosts,
     loadMorePosts,
     loadedRemotePostCount,
     posts: sortedPosts,
     retryPost,
+    refreshPosts,
     seedSampleMemories,
     sendMemory,
     toggleForcedOffline,

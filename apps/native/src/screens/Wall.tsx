@@ -144,8 +144,10 @@ export function Wall() {
     hasMorePosts,
     hydrated,
     isLoadingMorePosts,
+    isRefreshingPosts,
     loadMorePosts,
     posts,
+    refreshPosts,
     retryPost,
     seedSampleMemories,
     toggleReaction,
@@ -455,10 +457,12 @@ export function Wall() {
             maxToRenderPerBatch={10}
             onEndReached={requestMorePosts}
             onEndReachedThreshold={0.35}
+            onRefresh={refreshPosts}
             onScroll={handleWallScroll}
             onViewableItemsChanged={handleViewablePostsChanged}
             ref={wallListRef}
             renderItem={renderWallItem}
+            refreshing={isRefreshingPosts}
             scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
             stickyHeaderIndices={[0]}
