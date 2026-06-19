@@ -47,6 +47,7 @@ import { useComposerDraft } from "../src/hooks/useComposerDraft";
 import { useAppState } from "../src/state/AppState";
 import { useMemoryWallContext } from "../src/state/MemoryWallProvider";
 import { AudioMediaPlayer } from "../src/ui/AudioMediaPlayer";
+import { Avatar } from "../src/ui/Avatar";
 import { ScreenBackground } from "../src/ui/Glass";
 import { HapticPressable as Pressable } from "../src/ui/HapticPressable";
 import { SplashScreen } from "../src/ui/Splash";
@@ -584,18 +585,15 @@ export default function Compose() {
               onPress={switchAuthor}
               style={styles.authorChip}
             >
-              <View style={styles.authorAvatar}>
-                {activeMember?.photoURL ? (
-                  <Image
-                    source={{ uri: activeMember.photoURL }}
-                    style={styles.authorAvatarImage as ImageStyle}
-                  />
-                ) : (
-                  <Text style={styles.authorAvatarText}>
-                    {activeMember?.initials ?? "?"}
-                  </Text>
-                )}
-              </View>
+              <Avatar
+                imageStyle={styles.authorAvatarImage as ImageStyle}
+                initials={activeMember?.initials}
+                memberId={activeMember?.id}
+                photoURL={activeMember?.photoURL}
+                style={styles.authorAvatar}
+                textStyle={styles.authorAvatarText}
+                version={activeMember?.updatedAt}
+              />
               <Text style={styles.authorChipText}>
                 {activeMember?.displayName ?? "You"}
               </Text>

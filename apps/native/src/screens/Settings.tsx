@@ -2,12 +2,10 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   Alert,
   AppState as NativeAppState,
-  Image,
   Modal,
   StyleSheet,
   Text,
   View,
-  type ImageStyle,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import * as ImagePicker from "expo-image-picker";
@@ -33,6 +31,7 @@ import {
 
 import type { FamilyMember, GoogleDeliveryConnection } from "@may/core";
 
+import { Avatar } from "../ui/Avatar";
 import { Surface } from "../ui/Glass";
 import { HapticPressable as Pressable } from "../ui/HapticPressable";
 import type { FamilyMembership } from "../state/AppState";
@@ -855,18 +854,15 @@ function ProfilePhotoRow({
         pressed ? styles.rowPressed : null,
       ]}
     >
-      <View style={styles.profileAvatar}>
-        {member?.photoURL ? (
-          <Image
-            source={{ uri: member.photoURL }}
-            style={styles.profileAvatarImage as ImageStyle}
-          />
-        ) : (
-          <Text style={styles.profileAvatarText}>
-            {member?.initials ?? "?"}
-          </Text>
-        )}
-      </View>
+      <Avatar
+        imageStyle={styles.profileAvatarImage}
+        initials={member?.initials}
+        memberId={member?.id}
+        photoURL={member?.photoURL}
+        style={styles.profileAvatar}
+        textStyle={styles.profileAvatarText}
+        version={member?.updatedAt}
+      />
       <View style={styles.rowText}>
         <Text style={styles.rowLabel}>Profile picture</Text>
         <Text ellipsizeMode="tail" numberOfLines={1} style={styles.rowDetail}>

@@ -863,7 +863,7 @@ export const updateRemoteMemberProfilePhoto = async ({
     ),
   ]);
 
-  return uploadedPhoto;
+  return { ...uploadedPhoto, updatedAt };
 };
 
 export const subscribeToRemoteFamily = async ({

@@ -28,6 +28,7 @@ export type FamilyMember = {
   joinedAt: string;
   photoStoragePath?: string;
   photoURL?: string;
+  updatedAt?: string;
   deliveryConnection?: GoogleDeliveryConnection;
 };
 

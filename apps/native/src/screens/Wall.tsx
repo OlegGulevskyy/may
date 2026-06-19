@@ -75,6 +75,7 @@ import { useAppState } from "../state/AppState";
 import { useMemoryWallContext } from "../state/MemoryWallProvider";
 import { GlassCard, ScreenBackground, Surface } from "../ui/Glass";
 import { AudioMediaPlayer } from "../ui/AudioMediaPlayer";
+import { Avatar } from "../ui/Avatar";
 import { HapticPressable as Pressable } from "../ui/HapticPressable";
 import { StatusGlyph, StatusLegend } from "../ui/MemoryStatus";
 import { imageSource, useImageUriCache } from "../services/imageCache";
@@ -84,8 +85,10 @@ import { palette, radius, shadow } from "../theme";
 
 type ResolveAuthor = (id: string) => {
   displayName: string;
+  id: string;
   initials: string;
   photoURL?: string;
+  updatedAt?: string;
 };
 type WallTab = "home" | "settings";
 type WallListItem =
@@ -157,6 +160,7 @@ export function Wall() {
     (id) =>
       fam.members.find((member) => member.id === id) ?? {
         displayName: "Someone",
+        id,
         initials: "?",
       },
     [fam.members],
@@ -885,16 +889,15 @@ function MemoryCard({
   return (
     <Surface style={styles.card}>
       <View style={styles.cardHeader}>
-        <View style={styles.authorAvatar}>
-          {author.photoURL ? (
-            <Image
-              source={{ uri: author.photoURL }}
-              style={styles.authorAvatarImage as ImageStyle}
-            />
-          ) : (
-            <Text style={styles.authorAvatarText}>{author.initials}</Text>
-          )}
-        </View>
+        <Avatar
+          imageStyle={styles.authorAvatarImage as ImageStyle}
+          initials={author.initials}
+          memberId={author.id}
+          photoURL={author.photoURL}
+          style={styles.authorAvatar}
+          textStyle={styles.authorAvatarText}
+          version={author.updatedAt}
+        />
         <View style={styles.cardHeaderText}>
           <Text style={styles.authorName}>{author.displayName}</Text>
           <Text style={styles.timestamp}>

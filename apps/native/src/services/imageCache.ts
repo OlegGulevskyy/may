@@ -1,17 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as FileSystem from "expo-file-system/legacy";
 
 import type { MemoryMedia } from "@may/core";
 
-type ImageCacheVariant = "original" | "thumbnail";
+type ImageCacheVariant = "avatar" | "original" | "thumbnail";
 
 export type ImageCacheRequest = {
+  cacheKey?: string;
   media: MemoryMedia;
   uri: string;
   variant: ImageCacheVariant;
 };
 
+type AvatarCacheInput = {
+  memberId: string;
+  uri: string;
+  version?: string;
+};
+
 const imageCacheDirectories: Record<ImageCacheVariant, string | null> = {
+  avatar: FileSystem.cacheDirectory
+    ? `${FileSystem.cacheDirectory}may-avatar-images/`
+    : null,
   original: FileSystem.cacheDirectory
     ? `${FileSystem.cacheDirectory}may-original-images/`
     : null,
@@ -75,8 +85,11 @@ const extensionFromMedia = (
   }
 };
 
-const imageCacheKey = (variant: ImageCacheVariant, uri: string) =>
-  `${variant}:${uri}`;
+const imageCacheKey = (
+  variant: ImageCacheVariant,
+  uri: string,
+  cacheKey?: string,
+) => `${variant}:${cacheKey ?? uri}`;
 
 const cachedImageFileUri = (
   media: MemoryMedia,
@@ -97,6 +110,7 @@ const cachedImageFileUri = (
 };
 
 const cacheImageUri = ({
+  cacheKey,
   media,
   uri,
   variant,
@@ -104,6 +118,7 @@ const cacheImageUri = ({
   const directory = imageCacheDirectories[variant];
 
   const isImageRequest =
+    variant === "avatar" ||
     media.kind === "image" ||
     (variant === "thumbnail" && media.thumbnailUri === uri);
 
@@ -111,7 +126,7 @@ const cacheImageUri = ({
     return Promise.resolve(uri);
   }
 
-  const key = imageCacheKey(variant, uri);
+  const key = imageCacheKey(variant, uri, cacheKey);
   const cachedUri = imageCacheUris.get(key);
   if (cachedUri) {
     return Promise.resolve(cachedUri);
@@ -180,11 +195,38 @@ const cacheImageUri = ({
   return task;
 };
 
+const cachedUrisFromMemory = (requests: ImageCacheRequest[]) => {
+  const entries = requests
+    .map((request) => {
+      const cachedUri = imageCacheUris.get(
+        imageCacheKey(request.variant, request.uri, request.cacheKey),
+      );
+      return cachedUri ? ([request.uri, cachedUri] as const) : null;
+    })
+    .filter((entry): entry is readonly [string, string] => Boolean(entry));
+
+  return Object.fromEntries(entries);
+};
+
 export const useImageUriCache = (requests: ImageCacheRequest[]) => {
-  const [cachedUris, setCachedUris] = useState<Record<string, string>>({});
+  const [cachedUris, setCachedUris] = useState<Record<string, string>>(() =>
+    cachedUrisFromMemory(requests),
+  );
 
   useEffect(() => {
     let cancelled = false;
+    const alreadyCached = cachedUrisFromMemory(requests);
+
+    if (Object.keys(alreadyCached).length > 0) {
+      setCachedUris((current) => {
+        const next = { ...current, ...alreadyCached };
+        return Object.entries(next).some(
+          ([uri, cachedUri]) => current[uri] !== cachedUri,
+        )
+          ? next
+          : current;
+      });
+    }
 
     requests.forEach((request) => {
       cacheImageUri(request)
@@ -211,6 +253,77 @@ export const useImageUriCache = (requests: ImageCacheRequest[]) => {
   }, [requests]);
 
   return cachedUris;
+};
+
+const avatarMedia = ({
+  memberId,
+  uri,
+  version,
+}: AvatarCacheInput): MemoryMedia => ({
+  id: `avatar_${memberId || hashString(uri)}_${hashString(version ?? uri)}`,
+  kind: "image",
+  mimeType: "image/jpeg",
+  uri,
+});
+
+const avatarCacheRequest = (input: AvatarCacheInput): ImageCacheRequest => ({
+  cacheKey: `${input.memberId}:${input.uri}:${input.version ?? ""}`,
+  media: avatarMedia(input),
+  uri: input.uri,
+  variant: "avatar",
+});
+
+const deleteCachedImageUri = async ({
+  cacheKey,
+  media,
+  uri,
+  variant,
+}: ImageCacheRequest) => {
+  const key = imageCacheKey(variant, uri, cacheKey);
+  imageCacheUris.delete(key);
+  imageCacheDownloads.delete(key);
+
+  const fileUri = cachedImageFileUri(media, uri, variant);
+  if (fileUri) {
+    await FileSystem.deleteAsync(fileUri, { idempotent: true });
+  }
+};
+
+export const precacheAvatarUris = async (avatars: AvatarCacheInput[]) => {
+  await Promise.allSettled(
+    avatars.map((avatar) => cacheImageUri(avatarCacheRequest(avatar))),
+  );
+};
+
+export const invalidateCachedAvatarUri = async (avatar: AvatarCacheInput) => {
+  await deleteCachedImageUri(avatarCacheRequest(avatar));
+};
+
+export const useCachedAvatarUri = ({
+  memberId,
+  uri,
+  version,
+}: {
+  memberId?: string;
+  uri?: string;
+  version?: string;
+}) => {
+  const requests = useMemo(
+    () =>
+      memberId && uri
+        ? [
+            avatarCacheRequest({
+              memberId,
+              uri,
+              version,
+            }),
+          ]
+        : [],
+    [memberId, uri, version],
+  );
+  const cachedUris = useImageUriCache(requests);
+
+  return uri ? (cachedUris[uri] ?? uri) : undefined;
 };
 
 const directorySize = async (directoryUri: string): Promise<number> => {

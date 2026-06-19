@@ -47,6 +47,10 @@ import {
   registerFamilyPushToken,
   removeFamilyPushToken,
 } from "../services/pushNotifications";
+import {
+  invalidateCachedAvatarUri,
+  precacheAvatarUris,
+} from "../services/imageCache";
 
 const PROFILE_KEY = "may.profile.v1";
 const FAMILY_KEY = "may.family.v1";
@@ -130,6 +134,11 @@ const warnPushRegistrationFailed = (error: unknown) =>
     error: getErrorMessage(error),
   });
 
+const warnAvatarCacheFailed = (error: unknown) =>
+  console.warn("[MaySync] avatar cache failed", {
+    error: getErrorMessage(error),
+  });
+
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
@@ -143,6 +152,21 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [activeMemberId, setActiveMemberIdState] = useState<string | null>(
     null,
+  );
+  const avatarCacheInputs = useMemo(
+    () =>
+      family?.members.flatMap((member) =>
+        member.photoURL
+          ? [
+              {
+                memberId: member.id,
+                uri: member.photoURL,
+                version: member.updatedAt,
+              },
+            ]
+          : [],
+      ) ?? [],
+    [family?.members],
   );
 
   useEffect(() => {
@@ -234,6 +258,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       removeLocalItem(FAMILY_KEY);
     }
   }, [hydrated, family]);
+
+  useEffect(() => {
+    if (avatarCacheInputs.length === 0) {
+      return;
+    }
+
+    precacheAvatarUris(avatarCacheInputs).catch(warnAvatarCacheFailed);
+  }, [avatarCacheInputs]);
 
   useEffect(() => {
     if (!hydrated) {
@@ -478,6 +510,18 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         memberId,
         photo,
       });
+      await invalidateCachedAvatarUri({
+        memberId,
+        uri: uploadedPhoto.photoURL,
+        version: uploadedPhoto.updatedAt,
+      }).catch(warnAvatarCacheFailed);
+      precacheAvatarUris([
+        {
+          memberId,
+          uri: uploadedPhoto.photoURL,
+          version: uploadedPhoto.updatedAt,
+        },
+      ]).catch(warnAvatarCacheFailed);
 
       setSyncError(null);
       setProfile((current) =>
@@ -503,6 +547,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                       ...member,
                       photoStoragePath: uploadedPhoto.photoStoragePath,
                       photoURL: uploadedPhoto.photoURL,
+                      updatedAt: uploadedPhoto.updatedAt,
                     }
                   : member,
               ),
