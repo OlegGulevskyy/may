@@ -52,6 +52,8 @@ type FamilySession = {
   profile: LocalProfile;
 };
 
+const maxProfilePhotoUploadBytes = 25 * 1024 * 1024;
+
 export type UserFamilyMembership = {
   familyId: string;
   childEmail?: string;
@@ -354,6 +356,11 @@ const uploadProfilePhoto = async ({
   const blob = await blobFromLocalUri(photo.uri);
 
   try {
+    if (blob.size >= maxProfilePhotoUploadBytes) {
+      throw new Error(
+        "Choose a smaller profile picture. Profile pictures must be under 25 MB after cropping.",
+      );
+    }
     await uploadBytes(storageRef, blob, { contentType });
   } finally {
     (blob as Blob & { close?: () => void }).close?.();

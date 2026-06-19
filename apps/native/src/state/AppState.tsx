@@ -464,11 +464,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const updateProfilePhoto = useCallback(
     async (photo: ProfilePhotoInput) => {
-      const memberId = profile?.id ?? authUser?.id;
+      const memberId = activeMemberId ?? authUser?.id;
       if (!family || !memberId) {
         throw new Error("Cannot update a profile before a family exists.");
       }
-      if (!family.members.some((member) => member.id === memberId)) {
+      const member = family.members.find((current) => current.id === memberId);
+      if (!member) {
         throw new Error("You are not a member of this wall.");
       }
 
@@ -485,7 +486,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               ...current,
               photoURL: uploadedPhoto.photoURL,
             }
-          : current,
+          : {
+              id: member.id,
+              displayName: member.displayName,
+              initials: member.initials,
+              photoURL: uploadedPhoto.photoURL,
+            },
       );
       setFamily((current) =>
         current?.id === family.id
@@ -504,7 +510,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           : current,
       );
     },
-    [authUser?.id, family, profile?.id],
+    [activeMemberId, authUser?.id, family],
   );
 
   const switchFamily = useCallback(

@@ -355,7 +355,7 @@ export function SettingsPanel({
         mediaTypes: ["images"],
         preferredAssetRepresentationMode:
           ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
-        quality: 0.86,
+        quality: 0.72,
       });
       if (result.canceled || !result.assets[0]) {
         return;
