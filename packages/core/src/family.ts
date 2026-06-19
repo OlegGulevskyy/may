@@ -1,28 +1,5 @@
 import { createId } from "./memory";
 
-export type FamilyMemberRole = "creator" | "partner";
-
-export type FamilyMember = {
-  id: string;
-  displayName: string;
-  initials: string;
-  role: FamilyMemberRole;
-  joinedAt: string;
-};
-
-export type InviteStatus = "pending" | "accepted";
-
-export type FamilyInvite = {
-  code: string;
-  /** A warm, human label for who this is for, e.g. "Alex" or "my sister". */
-  label: string;
-  status: InviteStatus;
-  createdBy: string;
-  createdAt: string;
-  acceptedAt?: string;
-  acceptedBy?: string;
-};
-
 export const GOOGLE_DELIVERY_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/drive.file",
@@ -41,6 +18,32 @@ export type GoogleDeliveryConnection = {
   updatedAt: string;
 };
 
+export type FamilyMemberRole = "creator" | "partner";
+
+export type FamilyMember = {
+  id: string;
+  displayName: string;
+  initials: string;
+  role: FamilyMemberRole;
+  joinedAt: string;
+  photoStoragePath?: string;
+  photoURL?: string;
+  deliveryConnection?: GoogleDeliveryConnection;
+};
+
+export type InviteStatus = "pending" | "accepted";
+
+export type FamilyInvite = {
+  code: string;
+  /** A warm, human label for who this is for, e.g. "Alex" or "my sister". */
+  label: string;
+  status: InviteStatus;
+  createdBy: string;
+  createdAt: string;
+  acceptedAt?: string;
+  acceptedBy?: string;
+};
+
 export type Family = {
   id: string;
   childName: string;
@@ -50,6 +53,7 @@ export type Family = {
   deliveryCcEmails?: string[];
   members: FamilyMember[];
   invites: FamilyInvite[];
+  /** @deprecated Delivery connections now live on individual family members. */
   deliveryConnection?: GoogleDeliveryConnection;
   createdAt: string;
 };
@@ -59,6 +63,7 @@ export type LocalProfile = {
   id: string;
   displayName: string;
   initials: string;
+  photoURL?: string;
 };
 
 // Excludes visually ambiguous characters (I, L, O, 0, 1) so codes are easy to
@@ -91,17 +96,24 @@ export const createFamilyMember = ({
   displayName,
   role,
   id,
+  photoURL,
 }: {
   displayName: string;
   role: FamilyMemberRole;
   id?: string;
-}): FamilyMember => ({
-  id: id ?? createId("member"),
-  displayName: displayName.trim(),
-  initials: initialsFromName(displayName),
-  role,
-  joinedAt: new Date().toISOString(),
-});
+  photoURL?: string | null;
+}): FamilyMember => {
+  const normalizedPhotoURL = photoURL?.trim();
+
+  return {
+    id: id ?? createId("member"),
+    displayName: displayName.trim(),
+    initials: initialsFromName(displayName),
+    role,
+    joinedAt: new Date().toISOString(),
+    ...(normalizedPhotoURL ? { photoURL: normalizedPhotoURL } : {}),
+  };
+};
 
 export const createProfile = (displayName: string): LocalProfile => {
   const id = createId("member");

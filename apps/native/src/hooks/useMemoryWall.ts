@@ -34,6 +34,7 @@ const autoSyncStatuses = new Set<MemoryDeliveryStatus>([
 const wallPostPageSize = 10;
 
 type SendMemoryInput = {
+  emailSubject?: string;
   body: string;
   content?: MemoryRichTextDocument;
   contentImageMap?: MemoryContentImageMap;
@@ -447,11 +448,18 @@ export const useMemoryWall = (familyId: string, activeMemberId: string) => {
   );
 
   const sendMemory = useCallback(
-    ({ body, content, contentImageMap, media }: SendMemoryInput) => {
+    ({
+      emailSubject,
+      body,
+      content,
+      contentImageMap,
+      media,
+    }: SendMemoryInput) => {
       const post = {
         ...createMemoryPost({
           familyId,
           authorId: activeMemberId,
+          emailSubject,
           body,
           content,
           contentImageMap,

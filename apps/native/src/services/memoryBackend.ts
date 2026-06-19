@@ -83,6 +83,11 @@ const normalizeComments = (value: unknown): MemoryComment[] =>
 const normalizeReactions = (value: unknown): MemoryPost["reactions"] =>
   value && typeof value === "object" ? (value as MemoryPost["reactions"]) : {};
 
+const normalizeOptionalString = (value: unknown) =>
+  typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+
 const normalizeContentImageMap = (value: unknown): MemoryContentImageMap =>
   value && typeof value === "object"
     ? Object.fromEntries(
@@ -137,6 +142,7 @@ const toMemoryPost = (
     id,
     familyId: String(data.familyId ?? familyId),
     authorId: String(data.authorId ?? ""),
+    emailSubject: normalizeOptionalString(data.emailSubject),
     body: String(data.body ?? ""),
     content: isMemoryRichTextDocument(data.content) ? data.content : undefined,
     contentImageMap: normalizeContentImageMap(data.contentImageMap),

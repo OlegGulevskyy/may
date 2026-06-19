@@ -12,6 +12,12 @@ import {
   type Firestore,
   type Unsubscribe,
 } from "firebase/firestore";
+import {
+  getDownloadURL,
+  ref,
+  uploadBytes,
+  type FirebaseStorage,
+} from "firebase/storage";
 
 import {
   createFamily,
@@ -31,6 +37,12 @@ type CreateFamilyInput = {
   yourName: string;
   childName: string;
   childEmail: string;
+};
+
+export type ProfilePhotoInput = {
+  fileName?: string | null;
+  mimeType?: string | null;
+  uri: string;
 };
 
 type FamilySession = {
@@ -108,6 +120,7 @@ const toLocalProfile = (member: FamilyMember): LocalProfile => ({
   id: member.id,
   displayName: member.displayName,
   initials: member.initials,
+  photoURL: member.photoURL,
 });
 
 const userFamilyMembershipRef = (
@@ -260,6 +273,98 @@ const deliveryCcEmailsFromValue = (data: Record<string, unknown>) => {
     });
 };
 
+const blobFromLocalUri = (uri: string): Promise<Blob> =>
+  new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.responseType = "blob";
+    xhr.onload = () => resolve(xhr.response as Blob);
+    xhr.onerror = () => reject(new Error("Failed to read profile photo."));
+    xhr.open("GET", uri, true);
+    xhr.send(null);
+  });
+
+const fileExtension = (value?: string | null) =>
+  value?.split("?")[0]?.split(".").pop()?.toLowerCase();
+
+const profilePhotoContentType = (photo: ProfilePhotoInput) => {
+  if (photo.mimeType?.startsWith("image/")) {
+    return photo.mimeType;
+  }
+
+  switch (fileExtension(photo.fileName) ?? fileExtension(photo.uri)) {
+    case "png":
+      return "image/png";
+    case "heic":
+      return "image/heic";
+    case "heif":
+      return "image/heif";
+    case "webp":
+      return "image/webp";
+    case "jpg":
+    case "jpeg":
+    default:
+      return "image/jpeg";
+  }
+};
+
+const profilePhotoExtension = (contentType: string) => {
+  switch (contentType.toLowerCase()) {
+    case "image/png":
+      return "png";
+    case "image/heic":
+      return "heic";
+    case "image/heif":
+      return "heif";
+    case "image/webp":
+      return "webp";
+    default:
+      return "jpg";
+  }
+};
+
+const profilePhotoStoragePath = ({
+  contentType,
+  familyId,
+  memberId,
+}: {
+  contentType: string;
+  familyId: string;
+  memberId: string;
+}) =>
+  `families/${familyId}/members/${memberId}/profile-photo/avatar.${profilePhotoExtension(contentType)}`;
+
+const uploadProfilePhoto = async ({
+  familyId,
+  memberId,
+  photo,
+  storage,
+}: {
+  familyId: string;
+  memberId: string;
+  photo: ProfilePhotoInput;
+  storage: FirebaseStorage;
+}) => {
+  const contentType = profilePhotoContentType(photo);
+  const storagePath = profilePhotoStoragePath({
+    contentType,
+    familyId,
+    memberId,
+  });
+  const storageRef = ref(storage, storagePath);
+  const blob = await blobFromLocalUri(photo.uri);
+
+  try {
+    await uploadBytes(storageRef, blob, { contentType });
+  } finally {
+    (blob as Blob & { close?: () => void }).close?.();
+  }
+
+  return {
+    photoStoragePath: storagePath,
+    photoURL: await getDownloadURL(storageRef),
+  };
+};
+
 const familyBaseFromSnapshot = (
   id: string,
   data: Record<string, unknown>,
@@ -285,6 +390,47 @@ const sortByCreatedAt = <T extends { createdAt?: string; joinedAt?: string }>(
       String(second.joinedAt ?? second.createdAt ?? ""),
     ),
   );
+
+const membersWithLegacyDeliveryConnection = ({
+  legacyDeliveryConnection,
+  members,
+}: {
+  legacyDeliveryConnection?: GoogleDeliveryConnection;
+  members: FamilyMember[];
+}) => {
+  if (!legacyDeliveryConnection) {
+    return members;
+  }
+
+  return members.map((member) =>
+    member.id === legacyDeliveryConnection.connectedBy &&
+    !member.deliveryConnection
+      ? {
+          ...member,
+          deliveryConnection: legacyDeliveryConnection,
+        }
+      : member,
+  );
+};
+
+const familyFromParts = ({
+  base,
+  invites,
+  members,
+}: {
+  base: RemoteFamilyBase;
+  invites: FamilyInvite[];
+  members: FamilyMember[];
+}): Family => ({
+  ...base,
+  invites: sortByCreatedAt(invites),
+  members: sortByCreatedAt(
+    membersWithLegacyDeliveryConnection({
+      legacyDeliveryConnection: base.deliveryConnection,
+      members,
+    }),
+  ),
+});
 
 export const createRemoteProfileAndFamily = async ({
   yourName,
@@ -538,15 +684,11 @@ export const fetchRemoteFamily = async (familyId: string): Promise<Family> => {
   const invitesSnap = await getDocs(collection(familyRef, "invites"));
   const base = familyBaseFromSnapshot(familySnap.id, familySnap.data());
 
-  return {
-    ...base,
-    invites: sortByCreatedAt(
-      invitesSnap.docs.map((invite) => invite.data() as FamilyInvite),
-    ),
-    members: sortByCreatedAt(
-      membersSnap.docs.map((member) => member.data() as FamilyMember),
-    ),
-  };
+  return familyFromParts({
+    base,
+    invites: invitesSnap.docs.map((invite) => invite.data() as FamilyInvite),
+    members: membersSnap.docs.map((member) => member.data() as FamilyMember),
+  });
 };
 
 export const loadRemoteSessionForCurrentUser =
@@ -674,6 +816,49 @@ export const updateRemoteFamilyDeliveryCcEmails = async ({
   });
 };
 
+export const updateRemoteMemberProfilePhoto = async ({
+  familyId,
+  memberId,
+  photo,
+}: {
+  familyId: string;
+  memberId: string;
+  photo: ProfilePhotoInput;
+}) => {
+  const signedIn = requireSignedIn();
+  if (signedIn.user.uid !== memberId) {
+    throw new Error("You can only update your own profile picture.");
+  }
+
+  const uploadedPhoto = await uploadProfilePhoto({
+    familyId,
+    memberId,
+    photo,
+    storage: signedIn.services.storage,
+  });
+  const updatedAt = new Date().toISOString();
+
+  await Promise.all([
+    updateDoc(
+      doc(signedIn.services.db, "families", familyId, "members", memberId),
+      {
+        ...uploadedPhoto,
+        updatedAt,
+      },
+    ),
+    setDoc(
+      doc(signedIn.services.db, "users", signedIn.user.uid),
+      {
+        photoURL: uploadedPhoto.photoURL,
+        updatedAt,
+      },
+      { merge: true },
+    ),
+  ]);
+
+  return uploadedPhoto;
+};
+
 export const subscribeToRemoteFamily = async ({
   familyId,
   onError,
@@ -697,11 +882,7 @@ export const subscribeToRemoteFamily = async ({
     if (!base || !baseReady || !membersReady || !invitesReady) {
       return;
     }
-    onFamily({
-      ...base,
-      invites: sortByCreatedAt(invites),
-      members: sortByCreatedAt(members),
-    });
+    onFamily(familyFromParts({ base, invites, members }));
   };
 
   const handleError = (error: unknown) => onError(getErrorMessage(error));

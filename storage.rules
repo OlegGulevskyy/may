@@ -12,6 +12,12 @@ service firebase.storage {
         && request.resource.contentType.matches("(image|video|audio)/.*");
     }
 
+    function supportedProfilePhotoUpload() {
+      return request.resource != null
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches("image/.*");
+    }
+
     // Storage rules can only read the default Firestore database through
     // firestore.exists(). App data lives in the named may-default database, so
     // membership remains enforced by Firestore while Storage gates signed-in
@@ -19,6 +25,13 @@ service firebase.storage {
     match /families/{familyId}/posts/{postId}/media/{mediaId}/{fileName} {
       allow read: if signedIn();
       allow write: if signedIn() && supportedMediaUpload();
+    }
+
+    match /families/{familyId}/members/{memberId}/profile-photo/{fileName} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.auth.uid == memberId
+        && supportedProfilePhotoUpload();
     }
 
     match /families/{familyId}/{allPaths=**} {

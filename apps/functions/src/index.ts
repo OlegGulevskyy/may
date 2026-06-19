@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 
 import { createElement, type ReactNode } from "react";
 import { initializeApp } from "firebase-admin/app";
-import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import {
+  type DocumentReference,
+  FieldValue,
+  getFirestore,
+  type DocumentSnapshot,
+} from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { logger } from "firebase-functions";
 import { defineSecret, defineString } from "firebase-functions/params";
@@ -61,10 +66,25 @@ type GoogleTokenResponse = {
   error_description?: string;
 };
 
+type GoogleDeliveryConnectionStatus = "connected" | "needs_reconnect";
+
+type GoogleDeliveryConnection = {
+  status: GoogleDeliveryConnectionStatus;
+  googleEmail: string;
+  scopes: GoogleDeliveryScope[];
+  connectedBy: string;
+  connectedAt: string;
+  updatedAt: string;
+};
+
 type GoogleDeliveryPrivateState = {
+  connectedAt?: unknown;
+  connectedBy?: unknown;
   googleEmail?: unknown;
   refreshToken?: unknown;
+  scopes?: unknown;
   status?: unknown;
+  updatedAt?: unknown;
 };
 
 type GoogleDriveFile = {
@@ -120,15 +140,25 @@ type MemoryRichTextDocument = {
 type MemoryPost = {
   authorId?: unknown;
   body?: unknown;
+  comments?: unknown;
   content?: unknown;
   contentImageMap?: unknown;
   createdAt?: unknown;
   deliveredAt?: unknown;
+  emailSubject?: unknown;
   errorMessage?: unknown;
   familyId?: unknown;
   media?: unknown;
+  reactions?: unknown;
   status?: unknown;
   updatedAt?: unknown;
+};
+
+type MemoryComment = {
+  authorId?: unknown;
+  body?: unknown;
+  createdAt?: unknown;
+  id?: unknown;
 };
 
 type DeliveredDriveFile = {
@@ -195,6 +225,22 @@ const optionalString = (value: unknown) =>
   typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : undefined;
+
+const optionalHttpUrl = (value: unknown) => {
+  const candidate = optionalString(value);
+  if (!candidate) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 const normalizeEmailRecipients = (value: unknown) => {
   const values = Array.isArray(value) ? value : [value];
@@ -359,6 +405,377 @@ const richTextPlainText = (content?: MemoryRichTextDocument) => {
   return normalizeRichTextChildren(content?.content).map(visit).join("").trim();
 };
 
+type NormalizedMemoryComment = {
+  authorId: string;
+  body: string;
+  id: string;
+};
+
+type FamilyMemberSummary = {
+  displayName: string;
+  id: string;
+};
+
+type MemoryActivityNotification = {
+  actorId: string;
+  body: string;
+  data: Record<string, string>;
+  title: string;
+};
+
+type RegisteredPushToken = {
+  memberId: string;
+  ref: DocumentReference;
+  token: string;
+};
+
+type ExpoPushMessage = {
+  body: string;
+  data: Record<string, string>;
+  sound: "default";
+  title: string;
+  to: string;
+};
+
+type PendingExpoPushMessage = ExpoPushMessage & {
+  tokenRef: DocumentReference;
+};
+
+type ExpoPushTicket = {
+  details?: {
+    error?: string;
+  };
+  id?: string;
+  message?: string;
+  status?: string;
+};
+
+const expoPushSendUrl = "https://exp.host/--/api/v2/push/send";
+const expoPushChunkSize = 100;
+
+const truncatePreview = (value: string, maxLength = 140) => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+};
+
+const normalizeMemoryComments = (value: unknown): NormalizedMemoryComment[] =>
+  Array.isArray(value)
+    ? value
+        .map((item): NormalizedMemoryComment | null => {
+          const comment = item as MemoryComment;
+          const id = optionalString(comment.id);
+          const authorId = optionalString(comment.authorId);
+          const body = optionalString(comment.body);
+
+          return id && authorId && body ? { authorId, body, id } : null;
+        })
+        .filter(
+          (comment): comment is NormalizedMemoryComment => Boolean(comment),
+        )
+    : [];
+
+const normalizeReactionMap = (value: unknown) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([reaction, authors]) => [
+        reaction,
+        Array.isArray(authors)
+          ? authors
+              .map(optionalString)
+              .filter((author): author is string => Boolean(author))
+          : [],
+      ])
+      .filter(([, authors]) => authors.length > 0),
+  ) as Record<string, string[]>;
+};
+
+const memoryLabelForActivity = ({
+  actorId,
+  authorId,
+  authorName,
+}: {
+  actorId: string;
+  authorId?: string;
+  authorName: string;
+}) => {
+  if (!authorId) {
+    return "a memory";
+  }
+
+  return authorId === actorId ? "their memory" : `${authorName}'s memory`;
+};
+
+const memberName = (
+  membersById: Map<string, FamilyMemberSummary>,
+  memberId: string,
+) => membersById.get(memberId)?.displayName ?? "Someone";
+
+const postTextPreview = (post: MemoryPost) =>
+  truncatePreview(
+    richTextPlainText(normalizeRichTextDocument(post.content)) ||
+      optionalString(post.body) ||
+      "Open the family wall.",
+  );
+
+const buildPostActivityNotifications = ({
+  after,
+  before,
+  familyId,
+  membersById,
+  postId,
+}: {
+  after: MemoryPost;
+  before: MemoryPost;
+  familyId: string;
+  membersById: Map<string, FamilyMemberSummary>;
+  postId: string;
+}): MemoryActivityNotification[] => {
+  const notifications: MemoryActivityNotification[] = [];
+  const authorId = optionalString(after.authorId);
+  const authorName = authorId ? memberName(membersById, authorId) : "Someone";
+  const beforeCommentIds = new Set(
+    normalizeMemoryComments(before.comments).map((comment) => comment.id),
+  );
+  const newComments = normalizeMemoryComments(after.comments).filter(
+    (comment) => !beforeCommentIds.has(comment.id),
+  );
+
+  for (const comment of newComments) {
+    const actorName = memberName(membersById, comment.authorId);
+    const memoryLabel = memoryLabelForActivity({
+      actorId: comment.authorId,
+      authorId,
+      authorName,
+    });
+
+    notifications.push({
+      actorId: comment.authorId,
+      body: truncatePreview(comment.body),
+      data: {
+        actorId: comment.authorId,
+        commentId: comment.id,
+        familyId,
+        postId,
+        type: "comment",
+      },
+      title: `${actorName} commented on ${memoryLabel}`,
+    });
+  }
+
+  const beforeReactions = normalizeReactionMap(before.reactions);
+  const afterReactions = normalizeReactionMap(after.reactions);
+  const beforeHeartAuthors = new Set(beforeReactions.heart ?? []);
+
+  for (const actorId of afterReactions.heart ?? []) {
+    if (beforeHeartAuthors.has(actorId)) {
+      continue;
+    }
+
+    const actorName = memberName(membersById, actorId);
+    const memoryLabel = memoryLabelForActivity({
+      actorId,
+      authorId,
+      authorName,
+    });
+
+    notifications.push({
+      actorId,
+      body: postTextPreview(after),
+      data: {
+        actorId,
+        familyId,
+        postId,
+        reaction: "heart",
+        type: "like",
+      },
+      title: `${actorName} liked ${memoryLabel}`,
+    });
+  }
+
+  return notifications;
+};
+
+const postActivityFieldsChanged = (before: MemoryPost, after: MemoryPost) =>
+  JSON.stringify(before.comments ?? []) !==
+    JSON.stringify(after.comments ?? []) ||
+  JSON.stringify(before.reactions ?? {}) !==
+    JSON.stringify(after.reactions ?? {});
+
+const fetchFamilyMemberSummaries = async (familyId: string) => {
+  const membersSnap = await db.collection(`families/${familyId}/members`).get();
+
+  return new Map(
+    membersSnap.docs.map((member) => [
+      member.id,
+      {
+        displayName: optionalString(member.data().displayName) ?? "Someone",
+        id: member.id,
+      },
+    ]),
+  );
+};
+
+const isExpoPushToken = (token: string) =>
+  /^Expo(nent)?PushToken\[[^\]]+\]$/.test(token);
+
+const fetchRegisteredPushTokens = async ({
+  familyId,
+  memberIds,
+}: {
+  familyId: string;
+  memberIds: string[];
+}): Promise<RegisteredPushToken[]> => {
+  const tokenLists = await Promise.all(
+    memberIds.map(async (memberId) => {
+      const tokensSnap = await db
+        .collection(`families/${familyId}/members/${memberId}/pushTokens`)
+        .get();
+
+      return tokensSnap.docs
+        .map((tokenDoc): RegisteredPushToken | null => {
+          const token = optionalString(tokenDoc.data().token);
+
+          return token && isExpoPushToken(token)
+            ? { memberId, ref: tokenDoc.ref, token }
+            : null;
+        })
+        .filter((token): token is RegisteredPushToken => Boolean(token));
+    }),
+  );
+
+  const byToken = new Map<string, RegisteredPushToken>();
+  tokenLists.flat().forEach((token) => byToken.set(token.token, token));
+  return [...byToken.values()];
+};
+
+const deletePushTokenRefs = async (refs: DocumentReference[]) => {
+  await Promise.allSettled(refs.map((ref) => ref.delete()));
+};
+
+const sendExpoPushMessages = async (messages: PendingExpoPushMessage[]) => {
+  const staleTokenRefs: DocumentReference[] = [];
+
+  for (let index = 0; index < messages.length; index += expoPushChunkSize) {
+    const chunk = messages.slice(index, index + expoPushChunkSize);
+    const response = await fetch(expoPushSendUrl, {
+      body: JSON.stringify(
+        chunk.map(({ tokenRef: _tokenRef, ...message }) => message),
+      ),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }).catch((error) => {
+      logger.warn("Expo push send failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+
+    if (!response) {
+      continue;
+    }
+
+    const body = (await response.json().catch(() => ({}))) as {
+      data?: ExpoPushTicket[] | ExpoPushTicket;
+      errors?: unknown;
+    };
+    const tickets = Array.isArray(body.data)
+      ? body.data
+      : body.data
+        ? [body.data]
+        : [];
+
+    if (!response.ok) {
+      logger.warn("Expo push send returned an error", {
+        errors: body.errors,
+        status: response.status,
+      });
+      continue;
+    }
+
+    tickets.forEach((ticket, ticketIndex) => {
+      if (ticket.status !== "error") {
+        return;
+      }
+
+      const message = chunk[ticketIndex];
+      logger.warn("Expo push ticket failed", {
+        error: ticket.details?.error,
+        message: ticket.message,
+      });
+
+      if (ticket.details?.error === "DeviceNotRegistered" && message) {
+        staleTokenRefs.push(message.tokenRef);
+      }
+    });
+  }
+
+  if (staleTokenRefs.length > 0) {
+    await deletePushTokenRefs(staleTokenRefs);
+  }
+};
+
+const sendMemoryActivityNotifications = async ({
+  familyId,
+  memberIds,
+  notifications,
+  postId,
+}: {
+  familyId: string;
+  memberIds: string[];
+  notifications: MemoryActivityNotification[];
+  postId: string;
+}) => {
+  const possibleRecipientIds = memberIds.filter((memberId) =>
+    notifications.some((notification) => notification.actorId !== memberId),
+  );
+
+  if (possibleRecipientIds.length === 0) {
+    return;
+  }
+
+  const tokens = await fetchRegisteredPushTokens({
+    familyId,
+    memberIds: possibleRecipientIds,
+  });
+  const messages = notifications.flatMap((notification) =>
+    tokens
+      .filter((token) => token.memberId !== notification.actorId)
+      .map(
+        (token): PendingExpoPushMessage => ({
+          body: notification.body,
+          data: notification.data,
+          sound: "default",
+          title: notification.title,
+          to: token.token,
+          tokenRef: token.ref,
+        }),
+      ),
+  );
+
+  if (messages.length === 0) {
+    return;
+  }
+
+  await sendExpoPushMessages(messages);
+  logger.info("Sent memory activity notifications", {
+    familyId,
+    notificationCount: notifications.length,
+    postId,
+    recipientDeviceCount: messages.length,
+  });
+};
+
 const assertGoogleJsonResponse = async <T extends { error?: unknown }>(
   response: Response,
   fallbackMessage: string,
@@ -471,6 +888,38 @@ const validateGoogleDeliveryScopes = (grantedScopes: Set<string>) => {
   }
 };
 
+const legacyGoogleDeliveryPrivateRef = (familyId: string) =>
+  db.doc(`families/${familyId}/private/googleDelivery`);
+
+const memberGoogleDeliveryPrivateRef = ({
+  familyId,
+  memberId,
+}: {
+  familyId: string;
+  memberId: string;
+}) => db.doc(`families/${familyId}/private/googleDelivery/users/${memberId}`);
+
+const googleDeliveryPrivateStateFromSnapshot = (
+  snapshot: DocumentSnapshot | undefined,
+) =>
+  snapshot?.exists
+    ? ((snapshot.data() ?? {}) as GoogleDeliveryPrivateState)
+    : undefined;
+
+const legacyGoogleDeliveryStateForMember = ({
+  legacyState,
+  memberId,
+}: {
+  legacyState: GoogleDeliveryPrivateState | undefined;
+  memberId: string;
+}) => {
+  if (optionalString(legacyState?.connectedBy) !== memberId) {
+    return undefined;
+  }
+
+  return legacyState;
+};
+
 const markGoogleDeliveryNeedsReconnect = async ({
   connectedBy,
   familyId,
@@ -481,20 +930,28 @@ const markGoogleDeliveryNeedsReconnect = async ({
   googleEmail: string;
 }) => {
   const now = new Date().toISOString();
-  await db.doc(`families/${familyId}`).set(
-    {
-      deliveryConnection: {
-        status: "needs_reconnect",
-        googleEmail,
-        scopes: [],
-        connectedBy,
-        connectedAt: now,
-        updatedAt: now,
-      },
-      updatedAt: now,
-    },
-    { merge: true },
-  );
+  const memberRef = db.doc(`families/${familyId}/members/${connectedBy}`);
+  const memberSnap = await memberRef.get();
+  if (!memberSnap.exists) {
+    return;
+  }
+
+  const connection = {
+    status: "needs_reconnect",
+    googleEmail,
+    scopes: [],
+    connectedBy,
+    connectedAt: now,
+    updatedAt: now,
+  } satisfies GoogleDeliveryConnection;
+
+  await Promise.all([
+    memberRef.set({ deliveryConnection: connection }, { merge: true }),
+    memberGoogleDeliveryPrivateRef({ familyId, memberId: connectedBy }).set(
+      connection,
+      { merge: true },
+    ),
+  ]);
 };
 
 const emailStyles = {
@@ -529,6 +986,15 @@ const emailStyles = {
     lineHeight: "42px",
     marginRight: "12px",
     textAlign: "center" as const,
+    width: "42px",
+  },
+  avatarImage: {
+    borderRadius: "999px",
+    display: "inline-block",
+    height: "42px",
+    marginRight: "12px",
+    objectFit: "cover" as const,
+    verticalAlign: "middle",
     width: "42px",
   },
   authorBlock: {
@@ -837,6 +1303,7 @@ const buildMemoryEmailText = ({
 
 const buildMemoryEmailHtml = async ({
   authorName,
+  authorPhotoURL,
   content,
   contentImageMap,
   inlineImages,
@@ -844,6 +1311,7 @@ const buildMemoryEmailHtml = async ({
   post,
 }: {
   authorName: string;
+  authorPhotoURL?: string;
   content?: MemoryRichTextDocument;
   contentImageMap: Record<string, string>;
   inlineImages: InlineEmailImage[];
@@ -886,7 +1354,17 @@ const buildMemoryEmailHtml = async ({
         h(
           Section,
           { style: emailStyles.header },
-          h("span", { style: emailStyles.avatar }, authorInitial(authorName)),
+          authorPhotoURL
+            ? h(Img, {
+                alt: `${authorName} profile picture`,
+                src: authorPhotoURL,
+                style: emailStyles.avatarImage,
+              })
+            : h(
+                "span",
+                { style: emailStyles.avatar },
+                authorInitial(authorName),
+              ),
           h(
             "span",
             { style: emailStyles.authorBlock },
@@ -932,6 +1410,7 @@ const buildMemoryEmailHtml = async ({
 const sendMemoryEmail = async ({
   accessToken,
   authorName,
+  authorPhotoURL,
   childEmail,
   childName,
   ccEmails,
@@ -941,6 +1420,7 @@ const sendMemoryEmail = async ({
 }: {
   accessToken: string;
   authorName: string;
+  authorPhotoURL?: string;
   childEmail: string;
   childName: string;
   ccEmails: string[];
@@ -948,7 +1428,8 @@ const sendMemoryEmail = async ({
   fromEmail: string;
   post: MemoryPost;
 }) => {
-  const subject = `A memory for ${childName}`;
+  const subject =
+    optionalString(post.emailSubject) ?? `A memory for ${childName}`;
   const content = normalizeRichTextDocument(post.content);
   const contentImageMap = normalizeContentImageMap(post.contentImageMap);
   const inlineMediaIds = contentImageMediaIds({
@@ -983,6 +1464,7 @@ const sendMemoryEmail = async ({
   });
   const html = await buildMemoryEmailHtml({
     authorName,
+    authorPhotoURL,
     content,
     contentImageMap,
     inlineImages,
@@ -1208,10 +1690,14 @@ const deliverMemoryPost = async ({
   post: MemoryPost;
   postId: string;
 }) => {
-  const [familySnap, privateSnap] = await Promise.all([
-    db.doc(`families/${familyId}`).get(),
-    db.doc(`families/${familyId}/private/googleDelivery`).get(),
-  ]);
+  const authorId = requireString(post.authorId, "post.authorId");
+  const [familySnap, privateSnap, legacyPrivateSnap, authorSnap] =
+    await Promise.all([
+      db.doc(`families/${familyId}`).get(),
+      memberGoogleDeliveryPrivateRef({ familyId, memberId: authorId }).get(),
+      legacyGoogleDeliveryPrivateRef(familyId).get(),
+      db.doc(`families/${familyId}/members/${authorId}`).get(),
+    ]);
 
   if (!familySnap.exists) {
     throw new Error("Family was not found.");
@@ -1223,12 +1709,22 @@ const deliverMemoryPost = async ({
   const ccEmails = normalizeFamilyDeliveryCcEmails(family).filter(
     (email) => email.toLowerCase() !== childEmail.toLowerCase(),
   );
-  const privateState = privateSnap.data() as
-    | GoogleDeliveryPrivateState
-    | undefined;
+  const memberPrivateState =
+    googleDeliveryPrivateStateFromSnapshot(privateSnap);
+  const legacyPrivateState = legacyGoogleDeliveryStateForMember({
+    legacyState: googleDeliveryPrivateStateFromSnapshot(legacyPrivateSnap),
+    memberId: authorId,
+  });
+  const privateState = memberPrivateState
+    ? memberPrivateState.status === "connected"
+      ? memberPrivateState
+      : undefined
+    : legacyPrivateState?.status === "connected"
+      ? legacyPrivateState
+      : undefined;
 
-  if (!privateSnap.exists || privateState?.status !== "connected") {
-    throw new Error("Google delivery is not connected.");
+  if (!privateState) {
+    throw new Error("The post author has not connected Google delivery.");
   }
 
   const refreshToken = requireString(
@@ -1281,15 +1777,13 @@ const deliverMemoryPost = async ({
     driveFiles.push(driveFile);
   }
 
-  const authorId = optionalString(post.authorId);
-  const authorSnap = authorId
-    ? await db.doc(`families/${familyId}/members/${authorId}`).get()
-    : undefined;
   const authorName =
     optionalString(authorSnap?.data()?.displayName) ?? "Someone";
+  const authorPhotoURL = optionalHttpUrl(authorSnap?.data()?.photoURL);
   const gmailMessage = await sendMemoryEmail({
     accessToken,
     authorName,
+    authorPhotoURL,
     ccEmails,
     childEmail,
     childName,
@@ -1348,17 +1842,24 @@ export const processGoogleDeliveryGrantRequest = onDocumentCreated(
       const grantedScopes = scopesFromTokenResponse(tokenResponse);
       validateGoogleDeliveryScopes(grantedScopes);
 
-      const privateRef = db.doc(`families/${familyId}/private/googleDelivery`);
-      const existingPrivateSnap = await privateRef.get();
-      const existingPrivate = existingPrivateSnap.exists
-        ? existingPrivateSnap.data()
-        : undefined;
-      const existingRefreshToken = existingPrivate?.refreshToken;
+      const privateRef = memberGoogleDeliveryPrivateRef({
+        familyId,
+        memberId: createdBy,
+      });
+      const [existingPrivateSnap, legacyPrivateSnap] = await Promise.all([
+        privateRef.get(),
+        legacyGoogleDeliveryPrivateRef(familyId).get(),
+      ]);
+      const existingPrivate =
+        googleDeliveryPrivateStateFromSnapshot(existingPrivateSnap);
+      const legacyPrivate = legacyGoogleDeliveryStateForMember({
+        legacyState: googleDeliveryPrivateStateFromSnapshot(legacyPrivateSnap),
+        memberId: createdBy,
+      });
       const refreshToken =
-        tokenResponse.refresh_token ??
-        (typeof existingRefreshToken === "string"
-          ? existingRefreshToken
-          : undefined);
+        optionalString(tokenResponse.refresh_token) ??
+        optionalString(existingPrivate?.refreshToken) ??
+        optionalString(legacyPrivate?.refreshToken);
 
       if (!refreshToken) {
         throw new Error(
@@ -1376,18 +1877,11 @@ export const processGoogleDeliveryGrantRequest = onDocumentCreated(
         scopes,
         connectedBy: createdBy,
         connectedAt:
-          typeof existingPrivate?.connectedAt === "string"
-            ? existingPrivate.connectedAt
-            : now,
+          optionalString(existingPrivate?.connectedAt) ??
+          optionalString(legacyPrivate?.connectedAt) ??
+          now,
         updatedAt: now,
-      } satisfies {
-        status: "connected";
-        googleEmail: string;
-        scopes: GoogleDeliveryScope[];
-        connectedBy: string;
-        connectedAt: string;
-        updatedAt: string;
-      };
+      } satisfies GoogleDeliveryConnection;
 
       await Promise.all([
         privateRef.set(
@@ -1398,13 +1892,7 @@ export const processGoogleDeliveryGrantRequest = onDocumentCreated(
           },
           { merge: true },
         ),
-        db.doc(`families/${familyId}`).set(
-          {
-            deliveryConnection: connection,
-            updatedAt: now,
-          },
-          { merge: true },
-        ),
+        memberRef.set({ deliveryConnection: connection }, { merge: true }),
       ]);
 
       logger.info("Connected Google delivery", {
@@ -1437,6 +1925,52 @@ export const processGoogleDeliveryGrantRequest = onDocumentCreated(
         }),
       );
     }
+  },
+);
+
+export const notifyFamilyOfPostActivity = onDocumentWritten(
+  {
+    database: firestoreDatabaseId,
+    document: "families/{familyId}/posts/{postId}",
+    region: storageFunctionRegion,
+    timeoutSeconds: 60,
+  },
+  async (event) => {
+    const before = event.data?.before;
+    const after = event.data?.after;
+
+    if (!before?.exists || !after?.exists) {
+      return;
+    }
+
+    const familyId = requireString(event.params.familyId, "familyId");
+    const postId = requireString(event.params.postId, "postId");
+    const beforePost = before.data() as MemoryPost;
+    const afterPost = after.data() as MemoryPost;
+
+    if (!postActivityFieldsChanged(beforePost, afterPost)) {
+      return;
+    }
+
+    const membersById = await fetchFamilyMemberSummaries(familyId);
+    const notifications = buildPostActivityNotifications({
+      after: afterPost,
+      before: beforePost,
+      familyId,
+      membersById,
+      postId,
+    });
+
+    if (notifications.length === 0) {
+      return;
+    }
+
+    await sendMemoryActivityNotifications({
+      familyId,
+      memberIds: [...membersById.keys()],
+      notifications,
+      postId,
+    });
   },
 );
 

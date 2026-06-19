@@ -82,7 +82,11 @@ import { getLocalString, setLocalString } from "../services/storage";
 import { SettingsPanel } from "./Settings";
 import { palette, radius, shadow } from "../theme";
 
-type ResolveAuthor = (id: string) => { displayName: string; initials: string };
+type ResolveAuthor = (id: string) => {
+  displayName: string;
+  initials: string;
+  photoURL?: string;
+};
 type WallTab = "home" | "settings";
 type WallListItem =
   | { id: "drafts"; type: "drafts" }
@@ -117,13 +121,17 @@ const wallViewabilityConfig = { itemVisiblePercentThreshold: 20 };
 export function Wall() {
   const router = useRouter();
   const {
+    activeMember,
     activeMemberId,
     connectGoogleDelivery,
     family,
     familyMemberships,
+    profile,
     signOut,
     switchFamily,
     updateDeliveryCcEmails,
+    updateProfilePhoto,
+    refreshPushNotifications,
   } = useAppState();
 
   // `Wall` only renders once the app state is ready (see app/index.tsx).
@@ -155,6 +163,13 @@ export function Wall() {
   const partner = useMemo(
     () => fam.members.find((member) => member.id !== memberId),
     [fam.members, memberId],
+  );
+  const profileMember = useMemo(
+    () =>
+      profile
+        ? (fam.members.find((member) => member.id === profile.id) ?? null)
+        : null,
+    [fam.members, profile],
   );
   const isSolo = fam.members.length < 2;
   const inviteNudgeStorageKey = inviteNudgeDismissedKey(fam.id);
@@ -461,7 +476,7 @@ export function Wall() {
               childName={fam.childName}
               deliveryCcEmails={fam.deliveryCcEmails}
               familyMemberships={familyMemberships}
-              googleDeliveryConnection={fam.deliveryConnection}
+              googleDeliveryConnection={activeMember?.deliveryConnection}
               isMemoryNudgeBusy={isMemoryNudgeBusy}
               memoryNudgeScheduleState={memoryNudgeScheduleState}
               memoryNudgeSettings={memoryNudgeSettings}
@@ -469,11 +484,14 @@ export function Wall() {
               onInvite={() => router.push("/invite")}
               onJoinFamily={() => router.push("/join")}
               onRefreshMemoryNudgeSchedule={refreshMemoryNudgeSchedule}
+              onRefreshPushNotifications={refreshPushNotifications}
               onSetMemoryNudgesEnabled={setMemoryNudgesEnabled}
               onSignOut={confirmSignOut}
               onSwitchFamily={switchFamily}
               onUpdateDeliveryCcEmails={updateDeliveryCcEmails}
               onUpdateMemoryNudgeSettings={updateMemoryNudgeSettings}
+              onUpdateProfilePhoto={updateProfilePhoto}
+              profileMember={profileMember}
             />
           </ScrollView>
         )}
@@ -639,6 +657,7 @@ function DraftRow({
   onResume: () => void;
 }) {
   const snippet =
+    draft.emailSubject?.trim() ||
     draft.body.trim() ||
     (draft.media.length > 0 ? "Attachments only" : "Empty note");
   const attachmentNote =
@@ -863,7 +882,14 @@ function MemoryCard({
     <Surface style={styles.card}>
       <View style={styles.cardHeader}>
         <View style={styles.authorAvatar}>
-          <Text style={styles.authorAvatarText}>{author.initials}</Text>
+          {author.photoURL ? (
+            <Image
+              source={{ uri: author.photoURL }}
+              style={styles.authorAvatarImage as ImageStyle}
+            />
+          ) : (
+            <Text style={styles.authorAvatarText}>{author.initials}</Text>
+          )}
         </View>
         <View style={styles.cardHeaderText}>
           <Text style={styles.authorName}>{author.displayName}</Text>
@@ -2319,7 +2345,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     height: 42,
     justifyContent: "center",
+    overflow: "hidden",
     width: 42,
+  },
+  authorAvatarImage: {
+    height: "100%",
+    width: "100%",
   },
   authorAvatarText: {
     color: "#fff",

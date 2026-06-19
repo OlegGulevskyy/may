@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   Alert,
   AppState as NativeAppState,
+  Image,
   Modal,
   StyleSheet,
   Text,
   View,
+  type ImageStyle,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import * as ImagePicker from "expo-image-picker";
 import {
   Bell,
   BellOff,
@@ -28,11 +31,12 @@ import {
   Users,
 } from "lucide-react-native";
 
-import type { GoogleDeliveryConnection } from "@may/core";
+import type { FamilyMember, GoogleDeliveryConnection } from "@may/core";
 
 import { Surface } from "../ui/Glass";
 import { HapticPressable as Pressable } from "../ui/HapticPressable";
 import type { FamilyMembership } from "../state/AppState";
+import type { ProfilePhotoInput } from "../services/familyBackend";
 import {
   clearImageCache,
   getImageCacheSizeBytes,
@@ -99,11 +103,14 @@ export function SettingsPanel({
   onInvite,
   onJoinFamily,
   onRefreshMemoryNudgeSchedule,
+  onRefreshPushNotifications,
   onSetMemoryNudgesEnabled,
   onSignOut,
   onSwitchFamily,
   onUpdateDeliveryCcEmails,
   onUpdateMemoryNudgeSettings,
+  onUpdateProfilePhoto,
+  profileMember,
 }: {
   activeFamilyId: string;
   childName: string;
@@ -117,6 +124,7 @@ export function SettingsPanel({
   onInvite: () => void;
   onJoinFamily: () => void;
   onRefreshMemoryNudgeSchedule: () => Promise<unknown>;
+  onRefreshPushNotifications: () => Promise<unknown>;
   onSetMemoryNudgesEnabled: (enabled: boolean) => Promise<boolean>;
   onSignOut: () => void;
   onSwitchFamily: (familyId: string) => Promise<unknown>;
@@ -124,6 +132,8 @@ export function SettingsPanel({
   onUpdateMemoryNudgeSettings: (
     settings: Partial<MemoryNudgeSettings>,
   ) => Promise<unknown>;
+  onUpdateProfilePhoto: (photo: ProfilePhotoInput) => Promise<unknown>;
+  profileMember: FamilyMember | null;
 }) {
   const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
   const [cacheBusy, setCacheBusy] = useState(false);
@@ -133,6 +143,7 @@ export function SettingsPanel({
     initialPermissionSummaries,
   );
   const [permissionsBusy, setPermissionsBusy] = useState(false);
+  const [profilePhotoBusy, setProfilePhotoBusy] = useState(false);
   const [timeWindowPickerVisible, setTimeWindowPickerVisible] = useState(false);
   const [switchingFamilyId, setSwitchingFamilyId] = useState<string | null>(
     null,
@@ -231,8 +242,8 @@ export function SettingsPanel({
     onConnectGoogleDelivery()
       .then(() =>
         Alert.alert(
-          "Google delivery connected",
-          "Dinomay can now send emails and upload files with this Google account.",
+          "Sending account connected",
+          "Emails for your posts will be sent from this Google account.",
         ),
       )
       .catch((error) =>
@@ -324,6 +335,45 @@ export function SettingsPanel({
     [activeFamilyId, onSwitchFamily, switchingFamilyId],
   );
 
+  const pickProfilePhoto = useCallback(async () => {
+    if (profilePhotoBusy) {
+      return;
+    }
+
+    try {
+      setProfilePhotoBusy(true);
+      const permission =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Photo permission", "Library access is needed first.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        mediaTypes: ["images"],
+        preferredAssetRepresentationMode:
+          ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        quality: 0.86,
+      });
+      if (result.canceled || !result.assets[0]) {
+        return;
+      }
+
+      await onUpdateProfilePhoto({
+        fileName: result.assets[0].fileName,
+        mimeType: result.assets[0].mimeType,
+        uri: result.assets[0].uri,
+      });
+      await loadPermissions();
+    } catch (error) {
+      Alert.alert("Could not update profile picture", getErrorMessage(error));
+    } finally {
+      setProfilePhotoBusy(false);
+    }
+  }, [loadPermissions, onUpdateProfilePhoto, profilePhotoBusy]);
+
   const toggleMemoryNudges = useCallback(() => {
     const enabling = !memoryNudgeSettings.enabled;
 
@@ -335,12 +385,23 @@ export function SettingsPanel({
             "Turn on notifications for Dinomay to schedule memory reminders.",
           );
         }
+        if (enabling && enabled) {
+          return onRefreshPushNotifications();
+        }
+        return undefined;
+      })
+      .then(() => {
         return loadPermissions();
       })
       .catch((error) =>
         Alert.alert("Could not update reminders", getErrorMessage(error)),
       );
-  }, [loadPermissions, memoryNudgeSettings.enabled, onSetMemoryNudgesEnabled]);
+  }, [
+    loadPermissions,
+    memoryNudgeSettings.enabled,
+    onRefreshPushNotifications,
+    onSetMemoryNudgesEnabled,
+  ]);
 
   const editMemoryNudgeCadence = useCallback(() => {
     Alert.alert("Reminder cadence", "The week runs Monday to Sunday.", [
@@ -407,12 +468,17 @@ export function SettingsPanel({
             ? onRefreshMemoryNudgeSchedule()
             : undefined,
         )
+        .then(() =>
+          permission.id === "notifications"
+            ? onRefreshPushNotifications()
+            : undefined,
+        )
         .catch((error) =>
           Alert.alert("Could not update permission", getErrorMessage(error)),
         )
         .finally(() => setPermissionsBusy(false));
     },
-    [loadPermissions, onRefreshMemoryNudgeSchedule],
+    [loadPermissions, onRefreshMemoryNudgeSchedule, onRefreshPushNotifications],
   );
 
   return (
@@ -421,6 +487,16 @@ export function SettingsPanel({
         <Text style={styles.title}>Settings</Text>
         <Text style={styles.subtitle}>For {childName}&apos;s wall</Text>
       </View>
+
+      <Section title="Profile">
+        <Surface style={styles.group}>
+          <ProfilePhotoRow
+            busy={profilePhotoBusy}
+            member={profileMember}
+            onPress={pickProfilePhoto}
+          />
+        </Surface>
+      </Section>
 
       <Section title="Memories wall">
         <Surface style={styles.group}>
@@ -559,7 +635,7 @@ export function SettingsPanel({
                 <CloudUpload color={palette.berry} size={20} />
               )
             }
-            label="Google delivery"
+            label="Send emails from"
             onPress={connectGoogleDelivery}
             showChevron
             trailingAccessory={
@@ -755,6 +831,55 @@ function StatusChip({ label }: { label: string }) {
         {label}
       </Text>
     </View>
+  );
+}
+
+function ProfilePhotoRow({
+  busy,
+  member,
+  onPress,
+}: {
+  busy: boolean;
+  member: FamilyMember | null;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel="Set profile picture"
+      accessibilityRole="button"
+      disabled={busy}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.row,
+        busy ? styles.rowDisabled : null,
+        pressed ? styles.rowPressed : null,
+      ]}
+    >
+      <View style={styles.profileAvatar}>
+        {member?.photoURL ? (
+          <Image
+            source={{ uri: member.photoURL }}
+            style={styles.profileAvatarImage as ImageStyle}
+          />
+        ) : (
+          <Text style={styles.profileAvatarText}>
+            {member?.initials ?? "?"}
+          </Text>
+        )}
+      </View>
+      <View style={styles.rowText}>
+        <Text style={styles.rowLabel}>Profile picture</Text>
+        <Text ellipsizeMode="tail" numberOfLines={1} style={styles.rowDetail}>
+          {member?.displayName ?? "Your profile"}
+        </Text>
+      </View>
+      <View style={styles.rowActionCluster}>
+        <Text ellipsizeMode="tail" numberOfLines={1} style={styles.rowValue}>
+          {busy ? "Saving" : member?.photoURL ? "Change" : "Add"}
+        </Text>
+        <ChevronRight color={palette.inkFaint} size={18} />
+      </View>
+    </Pressable>
   );
 }
 
@@ -1111,6 +1236,24 @@ const styles = StyleSheet.create({
   },
   rowDisabled: {
     opacity: 0.45,
+  },
+  profileAvatar: {
+    alignItems: "center",
+    backgroundColor: palette.ink,
+    borderRadius: radius.pill,
+    height: 42,
+    justifyContent: "center",
+    overflow: "hidden",
+    width: 42,
+  },
+  profileAvatarImage: {
+    height: "100%",
+    width: "100%",
+  },
+  profileAvatarText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "900",
   },
   rowIcon: {
     alignItems: "center",

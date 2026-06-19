@@ -100,12 +100,13 @@ The Settings screen asks parents to grant only
 `https://www.googleapis.com/auth/drive.file`. The app writes a one-time
 Firestore grant request, and a Firestore-triggered function exchanges the
 Google server auth code and stores the refresh token under
-`families/{familyId}/private/googleDelivery`; only sanitized connection
-metadata is mirrored onto the family document for the app UI.
+`families/{familyId}/private/googleDelivery/users/{uid}`; only sanitized
+connection metadata is mirrored onto that member document for the app UI.
 When a wall post is synced to Firestore, `deliverMemoryPostToGoogle` refreshes
-the Google access token, uploads any media files to the connected Drive account,
-shares those files with the child email, sends the child a Gmail message, and
-marks the post `delivered`.
+the post author's Google access token, uploads any media files to that author's
+connected Drive account, shares those files with the child email, sends the
+child a Gmail message from that author's Gmail account, and marks the post
+`delivered`.
 
 8. The app uses the signed-in Firebase Auth uid as the family member id and
    stores the active family on `users/{uid}`.

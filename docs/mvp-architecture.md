@@ -22,8 +22,9 @@ families/{familyId}/posts/{postId}/media/{mediaId}/original
 ```
 
 4. Storage functions will generate canonical image thumbnails.
-5. A delivery function will copy/summarize the post into Google Drive and send a
-   Gmail message to the child's inbox.
+5. A delivery function copies/summarizes the post into the author's Google
+   Drive and sends a Gmail message from the author's account to the child's
+   inbox.
 6. Firestore post snapshots drive realtime UI updates for both parents.
 
 ## Delivery Statuses
@@ -43,6 +44,7 @@ Extend the native sync repository so it:
 
 - uploads each local media file to Firebase Storage
 - stores upload progress and retry state in a durable local outbox
-- requests the Gmail/Drive consent needed for delivery
+- requests each parent's Gmail/Drive consent needed for delivery from their own
+  Google account
 - keeps the local cache/outbox behavior as the fallback when Firebase is
   unavailable

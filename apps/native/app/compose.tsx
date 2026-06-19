@@ -285,6 +285,9 @@ export default function Compose() {
   const [segments, setSegments] = useState<ComposerSegment[]>(
     () => initialSegments,
   );
+  const [emailSubject, setEmailSubject] = useState(
+    () => existing?.emailSubject ?? "",
+  );
   const [activeSelection, setActiveSelection] = useState<TextSelection>(() => {
     const firstText = initialSegments.find(
       (segment): segment is ComposerTextSegment => segment.type === "text",
@@ -341,6 +344,15 @@ export default function Compose() {
       });
     });
   }, []);
+
+  const focusFirstBodySegment = useCallback(() => {
+    const firstText = segments.find(
+      (segment): segment is ComposerTextSegment => segment.type === "text",
+    );
+    if (firstText) {
+      focusTextSegment(firstText.id, firstText.text.length);
+    }
+  }, [focusTextSegment, segments]);
 
   const updateTextSegment = useCallback((segmentId: string, text: string) => {
     setSegments((current) =>
@@ -461,12 +473,14 @@ export default function Compose() {
   // refined later. Empty drafts are discarded. Refs keep the unmount handler
   // pointed at the latest values without re-subscribing.
   const bodyRef = useRef(body);
+  const emailSubjectRef = useRef(emailSubject);
   const contentRef = useRef<MemoryRichTextDocument>(content);
   const contentImageMapRef = useRef<MemoryContentImageMap>(contentImageMap);
   const mediaRef = useRef(attachments);
   const draftsRef = useRef(drafts);
   const submittedRef = useRef(false);
   bodyRef.current = body;
+  emailSubjectRef.current = emailSubject;
   contentRef.current = content;
   contentImageMapRef.current = contentImageMap;
   mediaRef.current = attachments;
@@ -480,12 +494,14 @@ export default function Compose() {
       const id = draftIdRef.current;
       const content = contentRef.current;
       const hasContent =
+        emailSubjectRef.current.trim().length > 0 ||
         bodyRef.current.trim().length > 0 ||
         richTextImageSources(content).length > 0 ||
         mediaRef.current.length > 0;
       if (hasContent) {
         draftsRef.current.save({
           id,
+          emailSubject: emailSubjectRef.current,
           body: bodyRef.current,
           content,
           contentImageMap: contentImageMapRef.current,
@@ -522,6 +538,7 @@ export default function Compose() {
     submittedRef.current = true;
     drafts.remove(draftIdRef.current);
     sendMemory({
+      emailSubject,
       body,
       content,
       contentImageMap,
@@ -568,9 +585,16 @@ export default function Compose() {
               style={styles.authorChip}
             >
               <View style={styles.authorAvatar}>
-                <Text style={styles.authorAvatarText}>
-                  {activeMember?.initials ?? "?"}
-                </Text>
+                {activeMember?.photoURL ? (
+                  <Image
+                    source={{ uri: activeMember.photoURL }}
+                    style={styles.authorAvatarImage as ImageStyle}
+                  />
+                ) : (
+                  <Text style={styles.authorAvatarText}>
+                    {activeMember?.initials ?? "?"}
+                  </Text>
+                )}
               </View>
               <Text style={styles.authorChipText}>
                 {activeMember?.displayName ?? "You"}
@@ -583,11 +607,28 @@ export default function Compose() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
+            <View style={styles.subjectShell}>
+              <TextInput
+                autoCapitalize="sentences"
+                autoFocus
+                blurOnSubmit={false}
+                maxLength={160}
+                onChangeText={setEmailSubject}
+                onSubmitEditing={focusFirstBodySegment}
+                placeholder="Email subject..."
+                placeholderTextColor={palette.inkFaint}
+                returnKeyType="next"
+                style={styles.subjectInput}
+                value={emailSubject}
+              />
+            </View>
+
+            <View style={styles.subjectDivider} />
+
             <View style={styles.editorShell}>
               {segments.map((segment, index) =>
                 segment.type === "text" ? (
                   <TextInput
-                    autoFocus={index === 0}
                     key={segment.id}
                     multiline
                     onChangeText={(value) =>
@@ -982,7 +1023,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     height: 28,
     justifyContent: "center",
+    overflow: "hidden",
     width: 28,
+  },
+  authorAvatarImage: {
+    height: "100%",
+    width: "100%",
   },
   authorAvatarText: {
     color: "#fff",
@@ -996,14 +1042,30 @@ const styles = StyleSheet.create({
   },
   body: {
     flexGrow: 1,
-    gap: 20,
+    gap: 12,
     paddingHorizontal: 22,
     paddingTop: 8,
+  },
+  subjectShell: {
+    paddingTop: 2,
+  },
+  subjectInput: {
+    color: palette.ink,
+    fontSize: 18,
+    fontWeight: "600",
+    lineHeight: 25,
+    minHeight: 46,
+    padding: 0,
+  },
+  subjectDivider: {
+    backgroundColor: "rgba(37,45,43,0.12)",
+    height: StyleSheet.hairlineWidth,
+    width: "100%",
   },
   editorShell: {
     minHeight: 220,
     paddingHorizontal: 0,
-    paddingVertical: 12,
+    paddingTop: 12,
   },
   input: {
     color: palette.ink,

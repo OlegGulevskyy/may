@@ -37,6 +37,26 @@ service cloud.firestore {
         );
     }
 
+    function validPushTokenDocument(familyId, memberId) {
+      return request.resource.data.keys().hasOnly([
+          "createdAt",
+          "familyId",
+          "memberId",
+          "platform",
+          "token",
+          "tokenType",
+          "updatedAt"
+        ])
+        && request.resource.data.familyId == familyId
+        && request.resource.data.memberId == memberId
+        && request.resource.data.token is string
+        && request.resource.data.token.size() <= 512
+        && request.resource.data.tokenType == "expo"
+        && request.resource.data.platform in ["android", "ios", "web"]
+        && request.resource.data.createdAt is string
+        && request.resource.data.updatedAt is string;
+    }
+
     match /inviteCodes/{code} {
       allow create: if signedIn()
         && request.resource.data.code == code
@@ -84,8 +104,25 @@ service cloud.firestore {
       match /members/{memberId} {
         allow read: if familyMember(familyId)
           || (signedIn() && request.auth.uid == memberId);
-        allow create, update: if signedIn() && request.auth.uid == memberId;
+        allow create: if signedIn()
+          && request.auth.uid == memberId
+          && !request.resource.data.keys().hasAny(["deliveryConnection"]);
+        allow update: if signedIn()
+          && request.auth.uid == memberId
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["deliveryConnection"]);
         allow delete: if false;
+
+        match /pushTokens/{tokenId} {
+          allow read: if false;
+          allow create, update: if signedIn()
+            && request.auth.uid == memberId
+            && familyMember(familyId)
+            && validPushTokenDocument(familyId, memberId);
+          allow delete: if signedIn()
+            && request.auth.uid == memberId
+            && resource.data.familyId == familyId
+            && resource.data.memberId == memberId;
+        }
       }
 
       match /invites/{inviteCode} {
@@ -125,6 +162,10 @@ service cloud.firestore {
 
       match /private/{privateDocId} {
         allow read, write: if false;
+
+        match /{document=**} {
+          allow read, write: if false;
+        }
       }
 
       match /posts/{postId} {

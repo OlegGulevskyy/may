@@ -63,6 +63,7 @@ export type MemoryPost = {
   id: string;
   familyId: string;
   authorId: MemoryAuthorId;
+  emailSubject?: string;
   body: string;
   content?: MemoryRichTextDocument;
   contentImageMap?: MemoryContentImageMap;
@@ -79,6 +80,7 @@ export type MemoryPost = {
 export type NewMemoryPostInput = {
   familyId: string;
   authorId: MemoryAuthorId;
+  emailSubject?: string;
   body: string;
   content?: MemoryRichTextDocument;
   contentImageMap?: MemoryContentImageMap;
@@ -190,6 +192,7 @@ export const hasRichTextContent = (content?: MemoryRichTextDocument) =>
 export const createMemoryPost = ({
   familyId,
   authorId,
+  emailSubject,
   body,
   content,
   contentImageMap,
@@ -197,11 +200,13 @@ export const createMemoryPost = ({
 }: NewMemoryPostInput): MemoryPost => {
   const now = new Date().toISOString();
   const fallbackBody = richTextPlainText(content);
+  const normalizedEmailSubject = emailSubject?.trim();
 
   return {
     id: createId("post"),
     familyId,
     authorId,
+    ...(normalizedEmailSubject ? { emailSubject: normalizedEmailSubject } : {}),
     body: body.trim() || fallbackBody,
     content,
     contentImageMap,

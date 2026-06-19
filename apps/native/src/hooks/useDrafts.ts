@@ -15,6 +15,7 @@ import { getLocalString, setLocalString } from "../services/storage";
  */
 export type MemoryDraft = {
   id: string;
+  emailSubject?: string;
   body: string;
   content?: MemoryRichTextDocument;
   contentImageMap?: MemoryContentImageMap;
@@ -24,6 +25,7 @@ export type MemoryDraft = {
 
 export type DraftInput = {
   id: string;
+  emailSubject?: string;
   body: string;
   content?: MemoryRichTextDocument;
   contentImageMap?: MemoryContentImageMap;
@@ -77,9 +79,20 @@ export const useDrafts = (familyId: string): DraftsApi => {
   );
 
   const save = useCallback(
-    ({ id, body, content, contentImageMap, media }: DraftInput) => {
+    ({
+      id,
+      emailSubject,
+      body,
+      content,
+      contentImageMap,
+      media,
+    }: DraftInput) => {
+      const normalizedEmailSubject = emailSubject?.trim();
       const draft: MemoryDraft = {
         id,
+        ...(normalizedEmailSubject
+          ? { emailSubject: normalizedEmailSubject }
+          : {}),
         body,
         content,
         contentImageMap,

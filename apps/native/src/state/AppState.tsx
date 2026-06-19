@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { AppState as NativeAppState } from "react-native";
 
 import {
   createInvite,
@@ -25,6 +26,8 @@ import {
   loadRemoteSessionForCurrentUser,
   subscribeToRemoteFamily,
   switchRemoteFamily,
+  updateRemoteMemberProfilePhoto,
+  type ProfilePhotoInput,
   updateRemoteFamilyDeliveryCcEmails,
   type UserFamilyMembership,
 } from "../services/familyBackend";
@@ -40,6 +43,10 @@ import {
   setLocalString,
 } from "../services/storage";
 import { connectGoogleDelivery as connectGoogleDeliveryRemote } from "../services/googleDeliveryBackend";
+import {
+  registerFamilyPushToken,
+  removeFamilyPushToken,
+} from "../services/pushNotifications";
 
 const PROFILE_KEY = "may.profile.v1";
 const FAMILY_KEY = "may.family.v1";
@@ -82,6 +89,8 @@ type AppStateValue = {
   connectGoogleDelivery: () => Promise<void>;
   joinWithCode: (input: { yourName: string; code: string }) => Promise<boolean>;
   updateDeliveryCcEmails: (ccEmails: string[]) => Promise<void>;
+  updateProfilePhoto: (photo: ProfilePhotoInput) => Promise<void>;
+  refreshPushNotifications: () => Promise<void>;
   setActiveMemberId: (memberId: string) => void;
   switchFamily: (familyId: string) => Promise<void>;
   reset: () => void;
@@ -115,6 +124,11 @@ const normalizeEmailList = (emails: string[]) => {
       return true;
     });
 };
+
+const warnPushRegistrationFailed = (error: unknown) =>
+  console.warn("[MaySync] push notification registration failed", {
+    error: getErrorMessage(error),
+  });
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
@@ -274,6 +288,51 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, [activeMemberId, family?.id, hydrated]);
 
+  const refreshPushNotifications = useCallback(async () => {
+    if (
+      authStatus !== "signed-in" ||
+      isRestoringSession ||
+      !family?.id ||
+      !activeMemberId
+    ) {
+      return;
+    }
+
+    await registerFamilyPushToken({
+      familyId: family.id,
+      memberId: activeMemberId,
+    });
+  }, [activeMemberId, authStatus, family?.id, isRestoringSession]);
+
+  useEffect(() => {
+    refreshPushNotifications().catch(warnPushRegistrationFailed);
+  }, [refreshPushNotifications]);
+
+  useEffect(() => {
+    const subscription = NativeAppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        refreshPushNotifications().catch(warnPushRegistrationFailed);
+      }
+    });
+
+    return () => subscription.remove();
+  }, [refreshPushNotifications]);
+
+  useEffect(() => {
+    const familyId = family?.id;
+    const memberId = activeMemberId;
+
+    if (!familyId || !memberId) {
+      return;
+    }
+
+    return () => {
+      removeFamilyPushToken({ familyId, memberId }).catch(
+        warnPushRegistrationFailed,
+      );
+    };
+  }, [activeMemberId, family?.id]);
+
   const createProfileAndFamily = useCallback(
     async ({ yourName, childName, childEmail }: CreateFamilyInput) => {
       const remoteSession = await createRemoteProfileAndFamily({
@@ -317,10 +376,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const connectGoogleDelivery = useCallback(async () => {
     const familyId = family?.id;
-    if (!familyId) {
+    const memberId = activeMemberId;
+    if (!familyId || !memberId) {
       throw new Error("Cannot connect Google delivery before a family exists.");
     }
-    const previousDeliveryUpdatedAt = family.deliveryConnection?.updatedAt;
+    const previousDeliveryUpdatedAt = family.members.find(
+      (member) => member.id === memberId,
+    )?.deliveryConnection?.updatedAt;
 
     await connectGoogleDeliveryRemote({
       familyId,
@@ -331,7 +393,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const remoteFamily = await fetchRemoteFamily(familyId);
       setFamily(remoteFamily);
 
-      const connection = remoteFamily.deliveryConnection;
+      const connection = remoteFamily.members.find(
+        (member) => member.id === memberId,
+      )?.deliveryConnection;
       if (!connection) {
         continue;
       }
@@ -352,7 +416,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     throw new Error(
       "Dinomay received Google permission, but delivery status did not update yet. Open Settings again in a moment.",
     );
-  }, [family]);
+  }, [activeMemberId, family]);
 
   const joinWithCode = useCallback(
     async ({ yourName, code }: { yourName: string; code: string }) => {
@@ -398,6 +462,51 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [family],
   );
 
+  const updateProfilePhoto = useCallback(
+    async (photo: ProfilePhotoInput) => {
+      const memberId = profile?.id ?? authUser?.id;
+      if (!family || !memberId) {
+        throw new Error("Cannot update a profile before a family exists.");
+      }
+      if (!family.members.some((member) => member.id === memberId)) {
+        throw new Error("You are not a member of this wall.");
+      }
+
+      const uploadedPhoto = await updateRemoteMemberProfilePhoto({
+        familyId: family.id,
+        memberId,
+        photo,
+      });
+
+      setSyncError(null);
+      setProfile((current) =>
+        current?.id === memberId
+          ? {
+              ...current,
+              photoURL: uploadedPhoto.photoURL,
+            }
+          : current,
+      );
+      setFamily((current) =>
+        current?.id === family.id
+          ? {
+              ...current,
+              members: current.members.map((member) =>
+                member.id === memberId
+                  ? {
+                      ...member,
+                      photoStoragePath: uploadedPhoto.photoStoragePath,
+                      photoURL: uploadedPhoto.photoURL,
+                    }
+                  : member,
+              ),
+            }
+          : current,
+      );
+    },
+    [authUser?.id, family, profile?.id],
+  );
+
   const switchFamily = useCallback(
     async (familyId: string) => {
       if (family?.id === familyId) {
@@ -419,6 +528,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    if (family?.id && activeMemberId) {
+      await removeFamilyPushToken({
+        familyId: family.id,
+        memberId: activeMemberId,
+      }).catch(warnPushRegistrationFailed);
+    }
+
     await signOutCurrentUser();
     setAuthUser(null);
     setAuthStatus("signed-out");
@@ -426,7 +542,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setFamily(null);
     setFamilyMemberships([]);
     setActiveMemberIdState(null);
-  }, []);
+  }, [activeMemberId, family?.id]);
 
   const setActiveMemberId = useCallback((memberId: string) => {
     setActiveMemberIdState(memberId);
@@ -495,6 +611,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       connectGoogleDelivery,
       joinWithCode,
       updateDeliveryCcEmails,
+      updateProfilePhoto,
+      refreshPushNotifications,
       setActiveMemberId,
       switchFamily,
       reset,
@@ -517,6 +635,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       connectGoogleDelivery,
       joinWithCode,
       updateDeliveryCcEmails,
+      updateProfilePhoto,
+      refreshPushNotifications,
       setActiveMemberId,
       switchFamily,
       reset,

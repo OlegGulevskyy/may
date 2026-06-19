@@ -50,13 +50,24 @@ const hasIosGoogleServices = existsSync(join(__dirname, googleServiceInfoFile));
 const googleIosUrlScheme =
   process.env.EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME ||
   toIosUrlScheme(process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID);
+const iosPushMode =
+  process.env.EAS_BUILD_PROFILE === "production" ? "production" : "development";
 
 const plugins = [...(expo.plugins ?? [])];
+const hasNotificationsPlugin = plugins.some((plugin) =>
+  Array.isArray(plugin)
+    ? plugin[0] === "expo-notifications"
+    : plugin === "expo-notifications",
+);
 const hasGooglePlugin = plugins.some((plugin) =>
   Array.isArray(plugin)
     ? plugin[0] === "@react-native-google-signin/google-signin"
     : plugin === "@react-native-google-signin/google-signin",
 );
+
+if (!hasNotificationsPlugin) {
+  plugins.push(["expo-notifications", { mode: iosPushMode }]);
+}
 
 if (!hasGooglePlugin) {
   if (hasAndroidGoogleServices && hasIosGoogleServices) {
