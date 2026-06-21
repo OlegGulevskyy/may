@@ -7,6 +7,7 @@ import {
 import * as FirebaseAuth from "@firebase/auth";
 import type { Persistence, ReactNativeAsyncStorage } from "@firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
 import { getStorage } from "firebase/storage";
 
 import { nativeEnv } from "./env";
@@ -22,6 +23,7 @@ const firebaseConfig: FirebaseOptions = {
 };
 
 const firestoreDatabaseId = nativeEnv.firestoreDatabaseId;
+const functionsRegion = "us-east1";
 const reactNativeAuth = FirebaseAuth as typeof FirebaseAuth & {
   getReactNativePersistence: (storage: ReactNativeAsyncStorage) => Persistence;
 };
@@ -55,6 +57,7 @@ export const getFirebaseServices = () => {
     auth,
     db: getFirestore(app, firestoreDatabaseId),
     firestoreDatabaseId,
+    functions: getFunctions(app, functionsRegion),
     storage: getStorage(app),
   };
 };

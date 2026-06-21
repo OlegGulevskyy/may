@@ -885,6 +885,11 @@ function MemoryCard({
     ) : post.body ? (
       <Text style={styles.postBody}>{post.body}</Text>
     ) : null;
+  const failureMessage =
+    post.status === "failed"
+      ? (post.errorMessage ??
+        "The last send attempt failed before a reason was recorded.")
+      : undefined;
 
   return (
     <Surface style={styles.card}>
@@ -916,6 +921,15 @@ function MemoryCard({
         ) : null}
         <StatusGlyph onPress={onShowStatusInfo} status={post.status} />
       </View>
+
+      {failureMessage ? (
+        <View style={styles.failureNotice}>
+          <Text style={styles.failureTitle}>Could not send</Text>
+          <Text selectable style={styles.failureMessage}>
+            {failureMessage}
+          </Text>
+        </View>
+      ) : null}
 
       {postContent ? (
         <ExpandablePostContent
@@ -2391,6 +2405,26 @@ const styles = StyleSheet.create({
     color: palette.berry,
     fontSize: 13,
     fontWeight: "900",
+  },
+  failureNotice: {
+    backgroundColor: "rgba(176,76,64,0.1)",
+    borderColor: "rgba(176,76,64,0.22)",
+    borderRadius: radius.small,
+    borderWidth: 1,
+    gap: 4,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  failureTitle: {
+    color: palette.berry,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  failureMessage: {
+    color: palette.ink,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
   },
   postBody: {
     color: palette.ink,

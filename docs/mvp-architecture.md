@@ -13,18 +13,23 @@
 
 1. A parent creates a post with text and optional image, video, or audio media.
 2. The app stores the post locally immediately as a cache/outbox.
-3. When online, the app writes the post document to Firestore at
-   `families/{familyId}/posts/{postId}`. Media upload will later write original
-   files to Firebase Storage under:
+3. When online, the app asks the configured original-media storage provider for
+   an upload session, uploads original files there, and writes provider metadata
+   on each media item. The current provider is Google Drive for the post
+   author's connected Google delivery account; future providers should implement
+   the same original-media storage boundary.
+4. The app writes the post document to Firestore at
+   `families/{familyId}/posts/{postId}`. Firebase Storage is reserved for
+   thumbnails and small previews under:
 
 ```txt
-families/{familyId}/posts/{postId}/media/{mediaId}/original
+families/{familyId}/posts/{postId}/media/{mediaId}/thumb_960.jpg
+families/{familyId}/posts/{postId}/media/{mediaId}/preview.{ext}
 ```
 
-4. Storage functions will generate canonical image thumbnails.
-5. A delivery function copies/summarizes the post into the author's Google
-   Drive and sends a Gmail message from the author's account to the child's
-   inbox.
+5. A delivery function shares stored Drive originals with the child's inbox and
+   configured CC recipients, then sends a Gmail message from the author's
+   account.
 6. Firestore post snapshots drive realtime UI updates for both parents.
 
 ## Delivery Statuses
@@ -42,8 +47,8 @@ families/{familyId}/posts/{postId}/media/{mediaId}/original
 
 Extend the native sync repository so it:
 
-- uploads each local media file to Firebase Storage
 - stores upload progress and retry state in a durable local outbox
+- creates smaller canonical previews before Firebase preview upload
 - requests each parent's Gmail/Drive consent needed for delivery from their own
   Google account
 - keeps the local cache/outbox behavior as the fallback when Firebase is

@@ -29,6 +29,7 @@ import type {
 import { isMemoryRichTextDocument } from "@may/core";
 
 import { getFirebaseServices } from "./firebase";
+import { uploadOriginalMedia } from "./originalMediaStorage";
 
 const syncLog = (event: string, details?: Record<string, unknown>) => {
   console.info(`[MaySync] ${event}`, details ?? {});
@@ -200,6 +201,12 @@ const mediaStoragePath = (post: MemoryPost, media: MemoryMedia) =>
 const mediaThumbnailStoragePath = (storagePath: string) =>
   storagePath.replace(/\/original$/, "/thumb_960.jpg");
 
+const mediaPreviewStoragePath = (storagePath: string, media: MemoryMedia) => {
+  const extension =
+    fileExtension(media.fileName) ?? fileExtension(media.uri) ?? "jpg";
+  return storagePath.replace(/\/original$/, `/preview.${extension}`);
+};
+
 const fileExtension = (value?: string) =>
   value?.split("?")[0]?.split(".").pop()?.toLowerCase();
 
@@ -266,29 +273,39 @@ const uploadLocalMediaThumbnail = async (
   media: MemoryMedia,
   originalStoragePath: string,
 ): Promise<Pick<MemoryMedia, "thumbnailStoragePath" | "thumbnailUri">> => {
-  if (
-    !media.thumbnailUri ||
-    !isUploadableLocalUri(media.thumbnailUri) ||
-    media.thumbnailUri === media.uri
-  ) {
+  const thumbnailSourceUri =
+    media.thumbnailUri && isUploadableLocalUri(media.thumbnailUri)
+      ? media.thumbnailUri
+      : media.kind === "image" && isUploadableLocalUri(media.uri)
+        ? media.uri
+        : undefined;
+
+  if (!thumbnailSourceUri) {
     return {};
   }
 
   const thumbnailStoragePath =
     media.thumbnailStoragePath ??
-    mediaThumbnailStoragePath(originalStoragePath);
+    (media.kind === "image" && thumbnailSourceUri === media.uri
+      ? mediaPreviewStoragePath(originalStoragePath, media)
+      : mediaThumbnailStoragePath(originalStoragePath));
   const thumbnailRef = ref(storage, thumbnailStoragePath);
+  const contentType =
+    media.kind === "image" && thumbnailSourceUri === media.uri
+      ? mediaContentType(media)
+      : "image/jpeg";
 
   syncLog("media thumbnail upload starting", {
+    contentType,
     kind: media.kind,
     mediaId: media.id,
     postId: post.id,
     storagePath: thumbnailStoragePath,
   });
 
-  const blob = await blobFromLocalUri(media.thumbnailUri);
+  const blob = await blobFromLocalUri(thumbnailSourceUri);
   try {
-    await uploadBytes(thumbnailRef, blob, { contentType: "image/jpeg" });
+    await uploadBytes(thumbnailRef, blob, { contentType });
   } finally {
     (blob as Blob & { close?: () => void }).close?.();
   }
@@ -320,8 +337,7 @@ const uploadLocalMedia = async (
     return media;
   }
 
-  const storagePath = media.storagePath ?? mediaStoragePath(post, media);
-  const storageRef = ref(storage, storagePath);
+  const thumbnailBaseStoragePath = mediaStoragePath(post, media);
   const contentType = mediaContentType(media);
 
   syncLog("media upload starting", {
@@ -329,21 +345,21 @@ const uploadLocalMedia = async (
     kind: media.kind,
     mediaId: media.id,
     postId: post.id,
-    storagePath,
+    provider: "googleDrive",
   });
 
-  const blob = await blobFromLocalUri(media.uri);
-  try {
-    await uploadBytes(storageRef, blob, { contentType });
-  } finally {
-    // RN blobs hold a native reference that must be released explicitly.
-    (blob as Blob & { close?: () => void }).close?.();
-  }
-
-  const uri = await getDownloadURL(storageRef);
+  const originalMedia = await uploadOriginalMedia(post, {
+    ...media,
+    mimeType: contentType,
+  });
   const hasUploadableThumbnail =
     typeof media.thumbnailUri === "string" &&
     isUploadableLocalUri(media.thumbnailUri);
+  const remoteThumbnailUri =
+    originalMedia.thumbnailUri &&
+    !isUploadableLocalUri(originalMedia.thumbnailUri)
+      ? originalMedia.thumbnailUri
+      : undefined;
   let uploadedThumbnail: Pick<
     MemoryMedia,
     "thumbnailStoragePath" | "thumbnailUri"
@@ -354,7 +370,7 @@ const uploadLocalMedia = async (
       storage,
       post,
       media,
-      storagePath,
+      thumbnailBaseStoragePath,
     );
   } catch (error) {
     syncWarn("media thumbnail upload failed", {
@@ -369,21 +385,26 @@ const uploadLocalMedia = async (
     kind: media.kind,
     mediaId: media.id,
     postId: post.id,
-    storagePath,
+    provider: originalMedia.originalStorage?.provider ?? "unknown",
   });
 
   return {
-    ...media,
+    ...originalMedia,
     mimeType: contentType,
-    storagePath,
+    storagePath:
+      originalMedia.originalStorage?.provider === "firebaseStorage"
+        ? originalMedia.storagePath
+        : undefined,
     thumbnailStoragePath:
-      uploadedThumbnail.thumbnailStoragePath ?? media.thumbnailStoragePath,
+      uploadedThumbnail.thumbnailStoragePath ??
+      originalMedia.thumbnailStoragePath,
     thumbnailUri:
       media.kind === "image"
-        ? uri
+        ? (uploadedThumbnail.thumbnailUri ??
+          remoteThumbnailUri ??
+          originalMedia.uri)
         : (uploadedThumbnail.thumbnailUri ??
           (hasUploadableThumbnail ? undefined : media.thumbnailUri)),
-    uri,
   };
 };
 
@@ -401,9 +422,10 @@ const uploadPostMedia = async (
     postId: post.id,
   });
 
-  const media = await Promise.all(
-    post.media.map((item) => uploadLocalMedia(storage, post, item)),
-  );
+  const media: MemoryMedia[] = [];
+  for (const item of post.media) {
+    media.push(await uploadLocalMedia(storage, post, item));
+  }
 
   syncLog("post media upload finished", {
     mediaCount: media.length,
@@ -436,6 +458,8 @@ const rewriteContentImageSources = (
   const mediaById = new Map(media.map((item) => [item.id, item]));
   const mediaByUri = new Map(media.map((item) => [item.uri, item]));
   const imageMap = contentImageMap ?? {};
+  const contentImageUri = (item: MemoryMedia) =>
+    item.kind === "image" ? (item.thumbnailUri ?? item.uri) : item.uri;
 
   const rewriteNode = (node: MemoryRichTextNode): MemoryRichTextNode => {
     const attrs = node.attrs;
@@ -448,7 +472,7 @@ const rewriteContentImageSources = (
       ...node,
       attrs:
         node.type === "image" && attrs && mappedMedia
-          ? { ...attrs, src: mappedMedia.uri }
+          ? { ...attrs, src: contentImageUri(mappedMedia) }
           : attrs,
       content: node.content?.map(rewriteNode),
     };
@@ -539,11 +563,9 @@ const withDownloadUrl = async (
   storage: FirebaseStorage,
   media: MemoryMedia,
 ): Promise<MemoryMedia> => {
-  if (!media.storagePath) {
-    return media;
-  }
-
-  const uri = await getDownloadURL(ref(storage, media.storagePath));
+  const uri = media.storagePath
+    ? await getDownloadURL(ref(storage, media.storagePath))
+    : media.uri;
   const thumbnailUri = await resolveThumbnailDownloadUrl(storage, media, uri);
 
   return thumbnailUri ? { ...media, thumbnailUri, uri } : { ...media, uri };

@@ -7,6 +7,19 @@ export type MemoryAuthorId = string;
 
 export type MemoryMediaKind = "image" | "video" | "audio";
 
+export type MemoryOriginalStorage =
+  | {
+      provider: "firebaseStorage";
+      storagePath: string;
+    }
+  | {
+      provider: "googleDrive";
+      fileId: string;
+      name: string;
+      webContentLink?: string;
+      webViewLink?: string;
+    };
+
 export type MemoryDeliveryStatus =
   | "local"
   | "queued"
@@ -22,10 +35,12 @@ export type MemoryMedia = {
   kind: MemoryMediaKind;
   uri: string;
   thumbnailUri?: string;
+  originalStorage?: MemoryOriginalStorage;
   storagePath?: string;
   thumbnailStoragePath?: string;
   fileName?: string;
   mimeType?: string;
+  sizeBytes?: number;
   durationMs?: number;
   waveformPeaks?: number[];
   width?: number;

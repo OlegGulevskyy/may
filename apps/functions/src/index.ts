@@ -17,6 +17,7 @@ import {
   onDocumentCreated,
   onDocumentWritten,
 } from "firebase-functions/v2/firestore";
+import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import {
   Body,
@@ -110,13 +111,23 @@ type MemoryMedia = {
   kind?: unknown;
   uri?: unknown;
   thumbnailUri?: unknown;
+  originalStorage?: unknown;
   storagePath?: unknown;
   thumbnailStoragePath?: unknown;
   fileName?: unknown;
   mimeType?: unknown;
+  sizeBytes?: unknown;
   durationMs?: unknown;
   width?: unknown;
   height?: unknown;
+};
+
+type GoogleDriveOriginalStorage = {
+  fileId: string;
+  name: string;
+  provider: "googleDrive";
+  webContentLink?: string;
+  webViewLink?: string;
 };
 
 type MemoryRichTextMark = {
@@ -170,7 +181,7 @@ type DeliveredDriveFile = {
 };
 
 type UploadedDriveFile = DeliveredDriveFile & {
-  content: Buffer;
+  content?: Buffer;
   mediaKind?: string;
   mimeType: string;
 };
@@ -474,8 +485,8 @@ const normalizeMemoryComments = (value: unknown): NormalizedMemoryComment[] =>
 
           return id && authorId && body ? { authorId, body, id } : null;
         })
-        .filter(
-          (comment): comment is NormalizedMemoryComment => Boolean(comment),
+        .filter((comment): comment is NormalizedMemoryComment =>
+          Boolean(comment),
         )
     : [];
 
@@ -918,6 +929,38 @@ const legacyGoogleDeliveryStateForMember = ({
   }
 
   return legacyState;
+};
+
+const connectedGoogleDeliveryPrivateStateForMember = async ({
+  familyId,
+  memberId,
+}: {
+  familyId: string;
+  memberId: string;
+}) => {
+  const [privateSnap, legacyPrivateSnap] = await Promise.all([
+    memberGoogleDeliveryPrivateRef({ familyId, memberId }).get(),
+    legacyGoogleDeliveryPrivateRef(familyId).get(),
+  ]);
+  const memberPrivateState =
+    googleDeliveryPrivateStateFromSnapshot(privateSnap);
+  const legacyPrivateState = legacyGoogleDeliveryStateForMember({
+    legacyState: googleDeliveryPrivateStateFromSnapshot(legacyPrivateSnap),
+    memberId,
+  });
+  const privateState = memberPrivateState
+    ? memberPrivateState.status === "connected"
+      ? memberPrivateState
+      : undefined
+    : legacyPrivateState?.status === "connected"
+      ? legacyPrivateState
+      : undefined;
+
+  if (!privateState) {
+    throw new Error("The post author has not connected Google delivery.");
+  }
+
+  return privateState;
 };
 
 const markGoogleDeliveryNeedsReconnect = async ({
@@ -1437,20 +1480,26 @@ const sendMemoryEmail = async ({
     contentImageMap,
     media: normalizePostMedia(post.media),
   });
-  const inlineImages: InlineEmailImage[] = driveFiles
-    .filter(
-      (file) =>
-        inlineMediaIds.has(file.mediaId) &&
-        file.mediaKind === "image" &&
-        file.mimeType.startsWith("image/"),
-    )
-    .map((file) => ({
-      cid: `${file.mediaId.replace(/[^a-zA-Z0-9_.-]/g, "") || "image"}@memory`,
-      content: file.content,
-      fileName: file.name,
-      mediaId: file.mediaId,
-      mimeType: file.mimeType,
-    }));
+  const inlineImages: InlineEmailImage[] = driveFiles.flatMap((file) => {
+    if (
+      !file.content ||
+      !inlineMediaIds.has(file.mediaId) ||
+      file.mediaKind !== "image" ||
+      !file.mimeType.startsWith("image/")
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        cid: `${file.mediaId.replace(/[^a-zA-Z0-9_.-]/g, "") || "image"}@memory`,
+        content: file.content,
+        fileName: file.name,
+        mediaId: file.mediaId,
+        mimeType: file.mimeType,
+      },
+    ];
+  });
   const publicDriveFiles = driveFiles.map(
     ({ content: _content, mimeType: _mimeType, ...file }) => file,
   );
@@ -1565,6 +1614,183 @@ const buildGmailMimeMessage = ({
   ].join("\r\n");
 };
 
+type OriginalMediaUploadSessionRequest = {
+  authorId?: unknown;
+  familyId?: unknown;
+  fileName?: unknown;
+  mediaId?: unknown;
+  mimeType?: unknown;
+  postId?: unknown;
+  sizeBytes?: unknown;
+};
+
+const uploadSessionFileName = ({
+  fileName,
+  mediaId,
+}: {
+  fileName?: string;
+  mediaId: string;
+}) => sanitizeHeaderValue(fileName || `memory-file-${mediaId}`);
+
+const optionalNonNegativeInteger = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+
+const assertFamilyMemberForUpload = async ({
+  familyId,
+  memberId,
+}: {
+  familyId: string;
+  memberId: string;
+}) => {
+  const snapshot = await db
+    .doc(`families/${familyId}/members/${memberId}`)
+    .get();
+  if (!snapshot.exists) {
+    throw new HttpsError(
+      "permission-denied",
+      "Only family members can upload memory media.",
+    );
+  }
+};
+
+const createGoogleDriveUploadSession = async ({
+  accessToken,
+  familyId,
+  fileName,
+  mediaId,
+  mimeType,
+  postId,
+  sizeBytes,
+}: {
+  accessToken: string;
+  familyId: string;
+  fileName: string;
+  mediaId: string;
+  mimeType: string;
+  postId: string;
+  sizeBytes?: number;
+}) => {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json; charset=UTF-8",
+    "X-Upload-Content-Type": mimeType,
+  };
+
+  if (sizeBytes !== undefined) {
+    headers["X-Upload-Content-Length"] = String(sizeBytes);
+  }
+
+  const response = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink,webContentLink",
+    {
+      body: JSON.stringify({
+        appProperties: {
+          familyId,
+          mediaId,
+          postId,
+          source: "memory-original",
+        },
+        name: fileName,
+      }),
+      headers,
+      method: "POST",
+    },
+  );
+
+  if (!response.ok) {
+    await assertGoogleJsonResponse<GoogleDriveFile>(
+      response,
+      "Google Drive did not start the upload.",
+    );
+  }
+
+  const uploadUrl = response.headers.get("location");
+  if (!uploadUrl) {
+    throw new Error("Google Drive did not return an upload URL.");
+  }
+
+  return {
+    fileName,
+    mimeType,
+    provider: "googleDrive" as const,
+    uploadMethod: "resumable" as const,
+    uploadUrl,
+  };
+};
+
+export const createOriginalMediaUploadSession =
+  onCall<OriginalMediaUploadSessionRequest>(
+    {
+      region: storageFunctionRegion,
+      secrets: [googleOauthClientSecret],
+      timeoutSeconds: 30,
+    },
+    async (request) => {
+      if (!request.auth?.uid) {
+        throw new HttpsError(
+          "unauthenticated",
+          "Sign in before uploading media.",
+        );
+      }
+
+      try {
+        const familyId = requireString(request.data.familyId, "familyId");
+        const postId = requireString(request.data.postId, "postId");
+        const mediaId = requireString(request.data.mediaId, "mediaId");
+        const authorId = requireString(request.data.authorId, "authorId");
+        const mimeType =
+          optionalString(request.data.mimeType) ?? "application/octet-stream";
+        const sizeBytes = optionalNonNegativeInteger(request.data.sizeBytes);
+        const fileName = uploadSessionFileName({
+          fileName: optionalString(request.data.fileName),
+          mediaId,
+        });
+
+        await Promise.all([
+          assertFamilyMemberForUpload({
+            familyId,
+            memberId: request.auth.uid,
+          }),
+          assertFamilyMemberForUpload({ familyId, memberId: authorId }),
+        ]);
+
+        const privateState = await connectedGoogleDeliveryPrivateStateForMember(
+          {
+            familyId,
+            memberId: authorId,
+          },
+        );
+        const refreshToken = requireString(
+          privateState.refreshToken,
+          "googleDelivery.refreshToken",
+        );
+        const accessToken = await refreshGoogleAccessToken(refreshToken);
+
+        return createGoogleDriveUploadSession({
+          accessToken,
+          familyId,
+          fileName,
+          mediaId,
+          mimeType,
+          postId,
+          sizeBytes,
+        });
+      } catch (error) {
+        if (error instanceof HttpsError) {
+          throw error;
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("Failed to create original media upload session", {
+          error: message,
+        });
+        throw new HttpsError("failed-precondition", message);
+      }
+    },
+  );
+
 const uploadMediaToDrive = async ({
   accessToken,
   familyId,
@@ -1650,6 +1876,83 @@ const uploadMediaToDrive = async ({
   };
 };
 
+const googleDriveOriginalStorageFromMedia = (
+  media: MemoryMedia,
+): GoogleDriveOriginalStorage | undefined => {
+  const storage = media.originalStorage;
+  if (!storage || typeof storage !== "object") {
+    return undefined;
+  }
+
+  const data = storage as Record<string, unknown>;
+  const fileId = optionalString(data.fileId);
+  if (data.provider !== "googleDrive" || !fileId) {
+    return undefined;
+  }
+
+  return {
+    fileId,
+    name:
+      optionalString(data.name) ??
+      optionalString(media.fileName) ??
+      `memory-file-${fileId}`,
+    provider: "googleDrive",
+    webContentLink: optionalString(data.webContentLink),
+    webViewLink: optionalString(data.webViewLink),
+  };
+};
+
+const driveFileFromStoredOriginal = ({
+  index,
+  media,
+  storage,
+}: {
+  index: number;
+  media: MemoryMedia;
+  storage: GoogleDriveOriginalStorage;
+}): UploadedDriveFile => ({
+  id: storage.fileId,
+  mediaId: optionalString(media.id) ?? String(index + 1),
+  mediaKind: optionalString(media.kind),
+  mimeType: optionalString(media.mimeType) ?? "application/octet-stream",
+  name: sanitizeHeaderValue(storage.name),
+  webContentLink: storage.webContentLink,
+  webViewLink:
+    storage.webViewLink ??
+    `https://drive.google.com/file/d/${storage.fileId}/view`,
+});
+
+const resolveMediaDriveFile = async ({
+  accessToken,
+  familyId,
+  index,
+  media,
+  postId,
+}: {
+  accessToken: string;
+  familyId: string;
+  index: number;
+  media: MemoryMedia;
+  postId: string;
+}) => {
+  const storedOriginal = googleDriveOriginalStorageFromMedia(media);
+  if (storedOriginal) {
+    return driveFileFromStoredOriginal({
+      index,
+      media,
+      storage: storedOriginal,
+    });
+  }
+
+  return uploadMediaToDrive({
+    accessToken,
+    familyId,
+    index,
+    media,
+    postId,
+  });
+};
+
 const shareDriveFileWithRecipient = async ({
   accessToken,
   fileId,
@@ -1691,13 +1994,14 @@ const deliverMemoryPost = async ({
   postId: string;
 }) => {
   const authorId = requireString(post.authorId, "post.authorId");
-  const [familySnap, privateSnap, legacyPrivateSnap, authorSnap] =
-    await Promise.all([
-      db.doc(`families/${familyId}`).get(),
-      memberGoogleDeliveryPrivateRef({ familyId, memberId: authorId }).get(),
-      legacyGoogleDeliveryPrivateRef(familyId).get(),
-      db.doc(`families/${familyId}/members/${authorId}`).get(),
-    ]);
+  const [familySnap, privateState, authorSnap] = await Promise.all([
+    db.doc(`families/${familyId}`).get(),
+    connectedGoogleDeliveryPrivateStateForMember({
+      familyId,
+      memberId: authorId,
+    }),
+    db.doc(`families/${familyId}/members/${authorId}`).get(),
+  ]);
 
   if (!familySnap.exists) {
     throw new Error("Family was not found.");
@@ -1709,24 +2013,6 @@ const deliverMemoryPost = async ({
   const ccEmails = normalizeFamilyDeliveryCcEmails(family).filter(
     (email) => email.toLowerCase() !== childEmail.toLowerCase(),
   );
-  const memberPrivateState =
-    googleDeliveryPrivateStateFromSnapshot(privateSnap);
-  const legacyPrivateState = legacyGoogleDeliveryStateForMember({
-    legacyState: googleDeliveryPrivateStateFromSnapshot(legacyPrivateSnap),
-    memberId: authorId,
-  });
-  const privateState = memberPrivateState
-    ? memberPrivateState.status === "connected"
-      ? memberPrivateState
-      : undefined
-    : legacyPrivateState?.status === "connected"
-      ? legacyPrivateState
-      : undefined;
-
-  if (!privateState) {
-    throw new Error("The post author has not connected Google delivery.");
-  }
-
   const refreshToken = requireString(
     privateState.refreshToken,
     "googleDelivery.refreshToken",
@@ -1746,7 +2032,7 @@ const deliverMemoryPost = async ({
   const driveFiles: UploadedDriveFile[] = [];
 
   for (const [index, item] of media.entries()) {
-    const driveFile = await uploadMediaToDrive({
+    const driveFile = await resolveMediaDriveFile({
       accessToken,
       familyId,
       index,
