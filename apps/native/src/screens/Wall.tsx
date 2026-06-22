@@ -1735,10 +1735,13 @@ function VideoPreviewer({
     videoPlayer.loop = false;
     videoPlayer.timeUpdateEventInterval = 0.25;
   });
+  const [playerStatus, setPlayerStatus] = useState(player.status);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const loggedErrorRef = useRef<string | null>(null);
 
   useEventListener(player, "statusChange", (event) => {
+    setPlayerStatus(event.status);
+
     if (event.status === "error") {
       setPlaybackError(
         event.error?.message ?? "The video file could not be loaded.",
@@ -1748,6 +1751,10 @@ function VideoPreviewer({
 
     setPlaybackError(null);
   });
+
+  useEffect(() => {
+    setPlayerStatus(player.status);
+  }, [player]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1799,6 +1806,7 @@ function VideoPreviewer({
   useEffect(() => {
     loggedErrorRef.current = null;
     setPlaybackError(null);
+    setPlayerStatus("idle");
   }, [media?.id, media?.uri]);
 
   useEffect(() => {
@@ -1817,6 +1825,12 @@ function VideoPreviewer({
   if (!media) {
     return null;
   }
+
+  const showLoading =
+    visible &&
+    !prepareError &&
+    !playbackError &&
+    (!videoSource || playerStatus === "idle" || playerStatus === "loading");
 
   return (
     <Modal
@@ -1853,6 +1867,11 @@ function VideoPreviewer({
             player={player}
             style={styles.videoPlayer}
           />
+          {showLoading ? (
+            <View pointerEvents="none" style={styles.videoLoadingOverlay}>
+              <ActivityIndicator color="#fff" size="large" />
+            </View>
+          ) : null}
           {prepareError || playbackError ? (
             <View pointerEvents="none" style={styles.videoErrorOverlay}>
               <Text style={styles.videoErrorTitle}>Could not play video</Text>
@@ -2836,6 +2855,15 @@ const styles = StyleSheet.create({
   videoPlayer: {
     flex: 1,
     width: "100%",
+  },
+  videoLoadingOverlay: {
+    alignItems: "center",
+    bottom: 0,
+    justifyContent: "center",
+    left: 0,
+    position: "absolute",
+    right: 0,
+    top: 0,
   },
   videoErrorOverlay: {
     alignItems: "center",
