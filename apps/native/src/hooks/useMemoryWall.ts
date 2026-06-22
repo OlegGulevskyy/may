@@ -66,6 +66,41 @@ const shouldKeepLocalOnlyPost = (
   localPostIds = new Set<string>(),
 ) => syncableStatuses.has(post.status) || localPostIds.has(post.id);
 
+const originalStorageCacheKey = (media: MemoryMedia) => {
+  const storage = media.originalStorage;
+  if (!storage) {
+    return "";
+  }
+
+  return storage.provider === "googleDrive"
+    ? `${storage.provider}:${storage.fileId}`
+    : `${storage.provider}:${storage.storagePath}`;
+};
+
+const resolvedMediaMatches = (
+  currentMedia: MemoryMedia[],
+  remoteMedia: MemoryMedia[],
+) => {
+  if (currentMedia.length !== remoteMedia.length) {
+    return false;
+  }
+
+  const currentById = new Map(currentMedia.map((media) => [media.id, media]));
+
+  return remoteMedia.every((remote) => {
+    const current = currentById.get(remote.id);
+
+    return (
+      current?.kind === remote.kind &&
+      current.uri === remote.uri &&
+      current.thumbnailUri === remote.thumbnailUri &&
+      current.storagePath === remote.storagePath &&
+      current.thumbnailStoragePath === remote.thumbnailStoragePath &&
+      originalStorageCacheKey(current) === originalStorageCacheKey(remote)
+    );
+  });
+};
+
 const selectInitialPosts = (storedPosts: MemoryPost[]) => {
   const visiblePosts = sortPostsByCreatedAt(storedPosts).slice(
     0,
@@ -91,7 +126,8 @@ const mergeRemotePosts = (
 
     return currentPost &&
       currentPost.updatedAt === post.updatedAt &&
-      currentPost.status === post.status
+      currentPost.status === post.status &&
+      resolvedMediaMatches(currentPost.media, post.media)
       ? currentPost
       : post;
   });
