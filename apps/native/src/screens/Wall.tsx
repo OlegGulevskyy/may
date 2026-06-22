@@ -875,6 +875,7 @@ function MemoryCard({
 }) {
   const author = resolveAuthor(post.authorId);
   const heartedByMe = post.reactions.heart?.includes(activeMemberId) ?? false;
+  const emailSubject = post.emailSubject?.trim();
   const [postContentCollapsed, setPostContentCollapsed] = useState(false);
   const hasRichContent = hasRichTextContent(post.content);
   const richImageIds = useMemo(
@@ -918,6 +919,11 @@ function MemoryCard({
         />
         <View style={styles.cardHeaderText}>
           <Text style={styles.authorName}>{author.displayName}</Text>
+          {emailSubject ? (
+            <Text numberOfLines={2} style={styles.emailSubject}>
+              {emailSubject}
+            </Text>
+          ) : null}
           <Text style={styles.timestamp}>
             {formatTimestamp(post.createdAt)}
           </Text>
@@ -2490,7 +2496,7 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   cardHeader: {
-    alignItems: "center",
+    alignItems: "flex-start",
     flexDirection: "row",
     gap: 10,
   },
@@ -2519,6 +2525,13 @@ const styles = StyleSheet.create({
     color: palette.ink,
     fontSize: 16,
     fontWeight: "900",
+  },
+  emailSubject: {
+    color: palette.ink,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+    marginTop: 1,
   },
   timestamp: {
     color: palette.inkMuted,
