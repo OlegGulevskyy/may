@@ -25,6 +25,7 @@ import {
   type ViewToken,
   useWindowDimensions,
 } from "react-native";
+import { useEventListener } from "expo";
 import { useRouter } from "expo-router";
 import {
   SafeAreaView,
@@ -82,6 +83,7 @@ import { imageSource, useImageUriCache } from "../services/imageCache";
 import { getLocalString, setLocalString } from "../services/storage";
 import { SettingsPanel } from "./Settings";
 import { palette, radius, shadow } from "../theme";
+import { resolvePlayableVideoSource } from "../services/originalMediaPlayback";
 
 type ResolveAuthor = (id: string) => {
   displayName: string;
@@ -99,6 +101,8 @@ type WallListItem =
 
 const inviteNudgeDismissedKey = (familyId: string) =>
   `may.invite-nudge-dismissed.${familyId}.v1`;
+
+const uriScheme = (uri: string) => uri.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
 
 const mediaSlideGap = 10;
 const minMediaPeekWidth = 24;
@@ -1724,13 +1728,62 @@ function VideoPreviewer({
   visible: boolean;
 }) {
   const insets = useSafeAreaInsets();
-  const player = useVideoPlayer(media?.uri ?? null, (videoPlayer) => {
+  const [videoSource, setVideoSource] =
+    useState<Parameters<typeof useVideoPlayer>[0]>(null);
+  const [prepareError, setPrepareError] = useState<string | null>(null);
+  const player = useVideoPlayer(videoSource, (videoPlayer) => {
     videoPlayer.loop = false;
     videoPlayer.timeUpdateEventInterval = 0.25;
   });
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const loggedErrorRef = useRef<string | null>(null);
+
+  useEventListener(player, "statusChange", (event) => {
+    if (event.status === "error") {
+      setPlaybackError(
+        event.error?.message ?? "The video file could not be loaded.",
+      );
+      return;
+    }
+
+    setPlaybackError(null);
+  });
 
   useEffect(() => {
+    let cancelled = false;
+    setVideoSource(null);
+    setPrepareError(null);
+
     if (!visible || !media) {
+      return;
+    }
+
+    resolvePlayableVideoSource(media)
+      .then((source) => {
+        if (!cancelled) {
+          setVideoSource(source);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const message =
+            error instanceof Error ? error.message : "Could not load video.";
+          setPrepareError(message);
+          console.warn("[MaySync] video prepare failed", {
+            error: message,
+            mediaId: media.id,
+            uriScheme: uriScheme(media.uri) ?? "unknown",
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [media, visible]);
+
+  useEffect(() => {
+    if (!visible || !media || !videoSource || prepareError) {
       player.pause();
       return;
     }
@@ -1741,7 +1794,25 @@ function VideoPreviewer({
     return () => {
       player.pause();
     };
-  }, [media, player, visible]);
+  }, [media, player, prepareError, videoSource, visible]);
+
+  useEffect(() => {
+    loggedErrorRef.current = null;
+    setPlaybackError(null);
+  }, [media?.id, media?.uri]);
+
+  useEffect(() => {
+    if (!media || !playbackError || loggedErrorRef.current === playbackError) {
+      return;
+    }
+
+    loggedErrorRef.current = playbackError;
+    console.warn("[MaySync] video playback failed", {
+      error: playbackError,
+      mediaId: media.id,
+      uriScheme: uriScheme(media.uri) ?? "unknown",
+    });
+  }, [media, playbackError]);
 
   if (!media) {
     return null;
@@ -1782,6 +1853,14 @@ function VideoPreviewer({
             player={player}
             style={styles.videoPlayer}
           />
+          {prepareError || playbackError ? (
+            <View pointerEvents="none" style={styles.videoErrorOverlay}>
+              <Text style={styles.videoErrorTitle}>Could not play video</Text>
+              <Text style={styles.videoErrorMessage}>
+                {prepareError ?? playbackError}
+              </Text>
+            </View>
+          ) : null}
         </View>
       </SafeAreaView>
     </Modal>
@@ -1934,6 +2013,22 @@ function MediaPreviewer({
     [width],
   );
 
+  const previewImageUri = useCallback(
+    (image: MemoryMedia) =>
+      cachedOriginalUris[image.uri] ??
+      cachedThumbnailUris[image.thumbnailUri ?? image.uri] ??
+      image.thumbnailUri ??
+      image.uri,
+    [cachedOriginalUris, cachedThumbnailUris],
+  );
+
+  const logPreviewImageError = useCallback((image: MemoryMedia) => {
+    console.warn("[MaySync] image preview load failed", {
+      mediaId: image.id,
+      uriScheme: uriScheme(image.uri) ?? "unknown",
+    });
+  }, []);
+
   if (images.length === 0) {
     return null;
   }
@@ -1951,10 +2046,9 @@ function MediaPreviewer({
       >
         <View style={[styles.previewSlide, { height: imageHeight, width }]}>
           <Image
+            onError={() => logPreviewImageError(activeImage)}
             resizeMode="contain"
-            source={imageSource(
-              cachedOriginalUris[activeImage.uri] ?? activeImage.uri,
-            )}
+            source={imageSource(previewImageUri(activeImage))}
             style={styles.previewImage}
           />
         </View>
@@ -1982,8 +2076,9 @@ function MediaPreviewer({
               style={[styles.previewSlide, { height: imageHeight, width }]}
             >
               <Image
+                onError={() => logPreviewImageError(image)}
                 resizeMode="contain"
-                source={imageSource(cachedOriginalUris[image.uri] ?? image.uri)}
+                source={imageSource(previewImageUri(image))}
                 style={styles.previewImage}
               />
             </View>
@@ -2741,6 +2836,29 @@ const styles = StyleSheet.create({
   videoPlayer: {
     flex: 1,
     width: "100%",
+  },
+  videoErrorOverlay: {
+    alignItems: "center",
+    backgroundColor: "rgba(16,18,24,0.86)",
+    borderRadius: radius.medium,
+    left: 24,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    position: "absolute",
+    right: 24,
+  },
+  videoErrorTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "800",
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  videoErrorMessage: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "center",
   },
   previewThumbs: {
     flexGrow: 0,

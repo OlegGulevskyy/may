@@ -30,6 +30,7 @@ import { isMemoryRichTextDocument } from "@may/core";
 
 import { getFirebaseServices } from "./firebase";
 import { uploadOriginalMedia } from "./originalMediaStorage";
+import { originalMediaStreamUrl } from "./originalMediaPlayback";
 
 const syncLog = (event: string, details?: Record<string, unknown>) => {
   console.info(`[MaySync] ${event}`, details ?? {});
@@ -561,11 +562,23 @@ const resolveThumbnailDownloadUrl = async (
 
 const withDownloadUrl = async (
   storage: FirebaseStorage,
+  post: MemoryPost,
   media: MemoryMedia,
 ): Promise<MemoryMedia> => {
-  const uri = media.storagePath
-    ? await getDownloadURL(ref(storage, media.storagePath))
-    : media.uri;
+  const streamUri =
+    (media.kind === "image" || media.kind === "video") &&
+    media.originalStorage?.provider === "googleDrive"
+      ? originalMediaStreamUrl({
+          familyId: post.familyId,
+          mediaId: media.id,
+          postId: post.id,
+        })
+      : undefined;
+  const uri =
+    streamUri ??
+    (media.storagePath
+      ? await getDownloadURL(ref(storage, media.storagePath))
+      : media.uri);
   const thumbnailUri = await resolveThumbnailDownloadUrl(storage, media, uri);
 
   return thumbnailUri ? { ...media, thumbnailUri, uri } : { ...media, uri };
@@ -577,7 +590,7 @@ const withDownloadUrls = async (
 ): Promise<MemoryPost> => ({
   ...post,
   media: await Promise.all(
-    post.media.map((media) => withDownloadUrl(storage, media)),
+    post.media.map((media) => withDownloadUrl(storage, post, media)),
   ),
 });
 
@@ -747,5 +760,5 @@ export const saveRemoteMemoryPost = async (post: MemoryPost) => {
     status: remotePost.status,
   });
 
-  return remotePost;
+  return withDownloadUrls(services.storage, remotePost);
 };

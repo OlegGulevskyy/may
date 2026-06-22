@@ -3,6 +3,8 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import type { MemoryMedia } from "@may/core";
 
+import { originalMediaStreamHeaders } from "./originalMediaPlayback";
+
 type ImageCacheVariant = "avatar" | "original" | "thumbnail";
 
 export type ImageCacheRequest = {
@@ -160,7 +162,12 @@ const cacheImageUri = ({
       await FileSystem.deleteAsync(fileUri, { idempotent: true });
     }
 
-    const result = await FileSystem.downloadAsync(uri, fileUri);
+    const headers = await originalMediaStreamHeaders(uri);
+    const result = await FileSystem.downloadAsync(
+      uri,
+      fileUri,
+      headers ? { headers } : undefined,
+    );
     if (result.status < 200 || result.status >= 300) {
       await FileSystem.deleteAsync(fileUri, { idempotent: true });
       throw new Error(`Image download failed with HTTP ${result.status}`);

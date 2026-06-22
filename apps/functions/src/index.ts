@@ -1,9 +1,11 @@
 import { mkdir, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 
 import { createElement, type ReactNode } from "react";
 import { initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import {
   type DocumentReference,
   FieldValue,
@@ -17,7 +19,7 @@ import {
   onDocumentCreated,
   onDocumentWritten,
 } from "firebase-functions/v2/firestore";
-import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import {
   Body,
@@ -1952,6 +1954,173 @@ const resolveMediaDriveFile = async ({
     postId,
   });
 };
+
+const queryStringValue = (value: unknown) =>
+  Array.isArray(value) ? optionalString(value[0]) : optionalString(value);
+
+const requestBearerToken = (authorization: unknown) => {
+  if (typeof authorization !== "string") {
+    return undefined;
+  }
+
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim();
+};
+
+const copyDriveStreamHeaders = (
+  source: Response,
+  target: { set: (field: string, value: string) => void },
+) => {
+  for (const headerName of [
+    "accept-ranges",
+    "content-length",
+    "content-range",
+    "content-type",
+  ]) {
+    const value = source.headers.get(headerName);
+    if (value) {
+      target.set(headerName, value);
+    }
+  }
+};
+
+export const streamOriginalMedia = onRequest(
+  {
+    region: storageFunctionRegion,
+    secrets: [googleOauthClientSecret],
+    timeoutSeconds: 300,
+  },
+  async (request, response) => {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      response.set("Allow", "GET, HEAD");
+      response.status(405).send("Method not allowed.");
+      return;
+    }
+
+    const idToken = requestBearerToken(request.headers.authorization);
+    if (!idToken) {
+      response.status(401).send("Sign in before playing media.");
+      return;
+    }
+
+    const familyId = queryStringValue(request.query.familyId);
+    const postId = queryStringValue(request.query.postId);
+    const mediaId = queryStringValue(request.query.mediaId);
+    if (!familyId || !postId || !mediaId) {
+      response.status(400).send("familyId, postId, and mediaId are required.");
+      return;
+    }
+
+    let uid: string;
+    try {
+      uid = (await getAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      response.status(401).send("Sign in before playing media.");
+      return;
+    }
+
+    const [memberSnap, postSnap] = await Promise.all([
+      db.doc(`families/${familyId}/members/${uid}`).get(),
+      db.doc(`families/${familyId}/posts/${postId}`).get(),
+    ]);
+
+    if (!memberSnap.exists) {
+      response.status(403).send("Only family members can play this media.");
+      return;
+    }
+
+    if (!postSnap.exists) {
+      response.status(404).send("Memory post was not found.");
+      return;
+    }
+
+    const post = postSnap.data() ?? {};
+    const authorId = optionalString(post.authorId);
+    const media = normalizePostMedia(post.media).find(
+      (item) => optionalString(item.id) === mediaId,
+    );
+    const originalStorage = media
+      ? googleDriveOriginalStorageFromMedia(media)
+      : undefined;
+
+    if (!authorId || !media || !originalStorage) {
+      response.status(404).send("Original media was not found.");
+      return;
+    }
+
+    const privateState = await connectedGoogleDeliveryPrivateStateForMember({
+      familyId,
+      memberId: authorId,
+    });
+    const refreshToken = requireString(
+      privateState.refreshToken,
+      "googleDelivery.refreshToken",
+    );
+    const accessToken = await refreshGoogleAccessToken(refreshToken);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+    };
+    const range = request.headers.range;
+    if (typeof range === "string") {
+      headers.Range = range;
+    }
+
+    const driveResponse = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        originalStorage.fileId,
+      )}?alt=media`,
+      { headers },
+    );
+
+    if (!driveResponse.ok) {
+      const message = await driveResponse
+        .text()
+        .catch(() => "Drive did not return an error body.");
+      logger.warn("Drive original media stream failed", {
+        familyId,
+        fileId: originalStorage.fileId,
+        mediaId,
+        postId,
+        status: driveResponse.status,
+        response: message.slice(0, 500),
+      });
+      copyDriveStreamHeaders(driveResponse, response);
+      response
+        .status(driveResponse.status)
+        .send("Original media could not be streamed.");
+      return;
+    }
+
+    response.status(driveResponse.status);
+    response.set("Cache-Control", "private, max-age=300");
+    copyDriveStreamHeaders(driveResponse, response);
+
+    if (request.method === "HEAD") {
+      await driveResponse.body?.cancel();
+      response.end();
+      return;
+    }
+
+    if (!driveResponse.body) {
+      response.status(502).send("Drive did not return a media stream.");
+      return;
+    }
+
+    const stream = Readable.fromWeb(
+      driveResponse.body as Parameters<typeof Readable.fromWeb>[0],
+    );
+    stream.on("error", (error) => {
+      logger.error("Drive original media stream interrupted", {
+        error: error instanceof Error ? error.message : String(error),
+        familyId,
+        mediaId,
+        postId,
+      });
+      response.destroy(error instanceof Error ? error : undefined);
+    });
+    stream.pipe(response);
+  },
+);
 
 const shareDriveFileWithRecipient = async ({
   accessToken,
