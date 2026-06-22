@@ -63,12 +63,14 @@ const notificationResponseKey = (response: NotificationResponse) => {
   const data = response.notification.request.content.data;
   const type = typeof data?.type === "string" ? data.type : "";
   const postId = typeof data?.postId === "string" ? data.postId : "";
+  const recapId = typeof data?.recapId === "string" ? data.recapId : "";
 
   return [
     response.notification.request.identifier,
     response.actionIdentifier,
     type,
     postId,
+    recapId,
   ].join(":");
 };
 
@@ -103,6 +105,21 @@ function NotificationResponseRouter() {
       if (type === "comment" || type === "like") {
         router.replace("/");
         refreshPosts();
+      }
+
+      if (type === "recap-ready") {
+        const recapId =
+          typeof response.notification.request.content.data?.recapId ===
+          "string"
+            ? response.notification.request.content.data.recapId
+            : undefined;
+        router.replace({
+          pathname: "/",
+          params: {
+            tab: "recaps",
+            ...(recapId ? { recapId } : {}),
+          },
+        });
       }
     },
     [refreshPosts, rootNavigationState?.key, router],

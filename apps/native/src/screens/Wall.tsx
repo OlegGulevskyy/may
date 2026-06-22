@@ -26,7 +26,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useEventListener } from "expo";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -44,6 +44,7 @@ import {
 } from "react-native-gesture-handler";
 import {
   ArrowUp,
+  BookOpen,
   Film,
   Heart,
   House,
@@ -83,6 +84,7 @@ import { StatusGlyph, StatusLegend } from "../ui/MemoryStatus";
 import { imageSource, useImageUriCache } from "../services/imageCache";
 import { getLocalString, setLocalString } from "../services/storage";
 import { SettingsPanel } from "./Settings";
+import { RecapsPanel } from "./Recaps";
 import { palette, radius, shadow } from "../theme";
 import { resolvePlayableVideoSource } from "../services/originalMediaPlayback";
 
@@ -93,7 +95,7 @@ type ResolveAuthor = (id: string) => {
   photoURL?: string;
   updatedAt?: string;
 };
-type WallTab = "home" | "settings";
+type WallTab = "home" | "recaps" | "settings";
 type WallListItem =
   | { id: "drafts"; type: "drafts" }
   | { id: "empty"; type: "empty" }
@@ -128,6 +130,10 @@ const wallViewabilityConfig = { itemVisiblePercentThreshold: 20 };
 
 export function Wall() {
   const router = useRouter();
+  const routeParams = useLocalSearchParams<{
+    recapId?: string;
+    tab?: string;
+  }>();
   const {
     activeMember,
     activeMemberId,
@@ -212,6 +218,14 @@ export function Wall() {
   const canLoadMorePostsRef = useRef(false);
   const loadMorePostsRef = useRef(loadMorePosts);
   const postsLengthRef = useRef(posts.length);
+  const routeRecapId =
+    typeof routeParams.recapId === "string" ? routeParams.recapId : undefined;
+
+  useEffect(() => {
+    if (routeParams.tab === "recaps") {
+      setActiveTab("recaps");
+    }
+  }, [routeParams.tab]);
 
   useEffect(() => {
     setInviteNudgeDismissed(getLocalString(inviteNudgeStorageKey) === "true");
@@ -478,6 +492,13 @@ export function Wall() {
             viewabilityConfig={wallViewabilityConfig}
             windowSize={5}
           />
+        ) : activeTab === "recaps" ? (
+          <RecapsPanel
+            childName={fam.childName}
+            familyId={fam.id}
+            initialRecapId={routeRecapId}
+            resolveAuthor={resolveAuthor}
+          />
         ) : (
           <ScrollView
             contentContainerStyle={styles.scrollContent}
@@ -581,6 +602,13 @@ function BottomTabs({
           icon={House}
           label="Home"
           onPress={() => onChange("home")}
+        />
+
+        <TabButton
+          active={activeTab === "recaps"}
+          icon={BookOpen}
+          label="Recaps"
+          onPress={() => onChange("recaps")}
         />
 
         <Pressable

@@ -57,6 +57,36 @@ service cloud.firestore {
         && request.resource.data.updatedAt is string;
     }
 
+    function validRecapRequestDocument(familyId) {
+      return request.resource.data.keys().hasOnly([
+          "createdAt",
+          "familyId",
+          "periodEnd",
+          "periodKind",
+          "periodStart",
+          "recapId",
+          "requestedBy",
+          "status",
+          "timezone"
+        ])
+        && request.resource.data.familyId == familyId
+        && request.resource.data.requestedBy == request.auth.uid
+        && request.resource.data.status == "queued"
+        && request.resource.data.periodKind in ["week", "month", "year"]
+        && request.resource.data.createdAt is string
+        && request.resource.data.periodStart is string
+        && request.resource.data.periodEnd is string
+        && request.resource.data.recapId is string
+        && request.resource.data.recapId.size() <= 80
+        && (
+          !request.resource.data.keys().hasAny(["timezone"])
+          || (
+            request.resource.data.timezone is string
+            && request.resource.data.timezone.size() <= 80
+          )
+        );
+    }
+
     match /inviteCodes/{code} {
       allow create: if signedIn()
         && request.resource.data.code == code
@@ -181,6 +211,17 @@ service cloud.firestore {
           allow read, create, update: if familyMember(familyId);
           allow delete: if false;
         }
+      }
+
+      match /recaps/{recapId} {
+        allow read: if familyMember(familyId);
+        allow create, update, delete: if false;
+      }
+
+      match /recapRequests/{requestId} {
+        allow create: if familyMember(familyId)
+          && validRecapRequestDocument(familyId);
+        allow read, update, delete: if false;
       }
     }
   }

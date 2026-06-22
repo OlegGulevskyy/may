@@ -44,10 +44,28 @@ const db = getFirestore(firestoreDatabaseId);
 const storageFunctionRegion = "us-east1";
 const googleOauthClientId = defineString("GOOGLE_OAUTH_CLIENT_ID");
 const googleOauthClientSecret = defineSecret("GOOGLE_OAUTH_CLIENT_SECRET");
+const openAiApiKey = defineSecret("OPENAI_API_KEY");
+const recapNotificationsEnabled = defineString("RECAP_NOTIFICATIONS_ENABLED", {
+  default: "false",
+});
 const googleDeliveryScopes = [
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/drive.file",
 ] as const;
+
+const recapModel = "gpt-5.4-nano";
+const recapTranscriptionModel = "gpt-4o-mini-transcribe";
+const defaultMonthlyRecapBudgetUsd = 5;
+const recapGenerationReserveUsd = 0.08;
+const maxRecapInputMemories = 45;
+const maxRecapVisionImages = 10;
+const maxAudioTranscriptDurationMs = 45_000;
+const maxAudioTranscriptTotalMs = 4 * 60_000;
+const maxAudioTranscriptCount = 8;
+const recapVisionImageMaxWidth = 512;
+const recapVisionImageQuality = 72;
+const openAiResponsesUrl = "https://api.openai.com/v1/responses";
+const openAiTranscriptionUrl = "https://api.openai.com/v1/audio/transcriptions";
 
 type GoogleDeliveryScope = (typeof googleDeliveryScopes)[number];
 
@@ -172,6 +190,138 @@ type MemoryPost = {
   status?: unknown;
   updatedAt?: unknown;
 };
+
+type MemoryRecapPeriodKind = "week" | "month" | "year";
+
+type MemoryRecapStatus = "queued" | "processing" | "ready" | "failed";
+
+type MemoryRecapMood =
+  | "tender"
+  | "playful"
+  | "quiet"
+  | "busy"
+  | "milestone"
+  | "ordinary";
+
+type MemoryRecapSectionType =
+  | "opening"
+  | "chapter"
+  | "quote"
+  | "audio"
+  | "letter";
+
+type MemoryRecapSection = {
+  id: string;
+  type: MemoryRecapSectionType;
+  title: string;
+  body: string;
+  memoryIds: string[];
+  quote?: string;
+};
+
+type MemoryRecapMediaSnapshot = {
+  id: string;
+  kind: string;
+  uri?: string;
+  thumbnailUri?: string;
+  durationMs?: number;
+};
+
+type MemoryRecapSource = {
+  id: string;
+  authorId: string;
+  bodyPreview?: string;
+  createdAt: string;
+  media: MemoryRecapMediaSnapshot[];
+  transcriptPreview?: string;
+};
+
+type MemoryRecapContributorSummary = {
+  authorId: string;
+  postCount: number;
+};
+
+type MemoryRecap = {
+  id: string;
+  familyId: string;
+  periodKind: MemoryRecapPeriodKind;
+  periodStart: string;
+  periodEnd: string;
+  timezone?: string;
+  status: MemoryRecapStatus;
+  title: string;
+  subtitle?: string;
+  mood?: MemoryRecapMood;
+  sections: MemoryRecapSection[];
+  sources: MemoryRecapSource[];
+  sourceMemoryIds: string[];
+  contributorSummaries?: MemoryRecapContributorSummary[];
+  requestedBy: string;
+  createdAt: string;
+  updatedAt: string;
+  readyAt?: string;
+  errorMessage?: string;
+  notificationStatus?: "disabled" | "pending" | "sent" | "failed";
+};
+
+type MemoryRecapRequest = {
+  createdAt?: unknown;
+  familyId?: unknown;
+  periodEnd?: unknown;
+  periodKind?: unknown;
+  periodStart?: unknown;
+  recapId?: unknown;
+  requestedBy?: unknown;
+  timezone?: unknown;
+};
+
+type RecapCandidateMemory = {
+  authorId: string;
+  body: string;
+  createdAt: string;
+  id: string;
+  media: MemoryMedia[];
+  score: number;
+  transcript: string;
+};
+
+type OpenAiUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+};
+
+type OpenAiResponsePayload = {
+  output_text?: string;
+  output?: Array<{
+    content?: Array<{
+      text?: string;
+      type?: string;
+    }>;
+  }>;
+  usage?: OpenAiUsage;
+  error?: {
+    message?: string;
+  };
+};
+
+type OpenAiTranscriptionPayload = {
+  text?: string;
+  error?: {
+    message?: string;
+  };
+};
+
+type OpenAiInputContent =
+  | {
+      text: string;
+      type: "input_text";
+    }
+  | {
+      detail: "low";
+      image_url: string;
+      type: "input_image";
+    };
 
 type MemoryComment = {
   authorId?: unknown;
@@ -422,6 +572,836 @@ const richTextPlainText = (content?: MemoryRichTextDocument) => {
   };
 
   return normalizeRichTextChildren(content?.content).map(visit).join("").trim();
+};
+
+const isRecapPeriodKind = (value: unknown): value is MemoryRecapPeriodKind =>
+  value === "week" || value === "month" || value === "year";
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+const optionalNumber = (value: unknown) =>
+  isFiniteNumber(value) ? value : undefined;
+
+const clampText = (value: string, maxLength: number) =>
+  value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}…`;
+
+const parentFacingText = (value?: string) =>
+  value && !/\b(you|your|yours)\b/i.test(value) ? value : undefined;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(
+    value &&
+    typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null),
+  );
+
+const removeUndefinedFields = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(removeUndefinedFields);
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .map(([key, item]) => [key, removeUndefinedFields(item)]),
+  );
+};
+
+const parseIsoDate = (value: unknown, field: string) => {
+  const text = requireString(value, field);
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`${field} must be a valid ISO date.`);
+  }
+  return date;
+};
+
+const monthKeyForDate = (date: Date) => date.toISOString().slice(0, 7);
+
+const parseMoney = (value: unknown, fallback: number) => {
+  const numberValue =
+    typeof value === "string" ? Number(value) : optionalNumber(value);
+  return numberValue && Number.isFinite(numberValue) && numberValue > 0
+    ? numberValue
+    : fallback;
+};
+
+const familyRecapConfigRef = (familyId: string) =>
+  db.doc(`families/${familyId}/private/recapConfig`);
+
+const familyRecapUsageRef = (familyId: string, monthKey: string) =>
+  db.doc(`families/${familyId}/private/recapUsage/months/${monthKey}`);
+
+const reserveRecapBudget = async ({
+  estimatedUsd,
+  familyId,
+}: {
+  estimatedUsd: number;
+  familyId: string;
+}) => {
+  const monthKey = monthKeyForDate(new Date());
+  const configRef = familyRecapConfigRef(familyId);
+  const usageRef = familyRecapUsageRef(familyId, monthKey);
+
+  return db.runTransaction(async (transaction) => {
+    const [configSnap, usageSnap] = await Promise.all([
+      transaction.get(configRef),
+      transaction.get(usageRef),
+    ]);
+    const budgetUsd = parseMoney(
+      configSnap.exists ? configSnap.data()?.monthlyBudgetUsd : undefined,
+      defaultMonthlyRecapBudgetUsd,
+    );
+    const data = usageSnap.exists ? (usageSnap.data() ?? {}) : {};
+    const spentUsd = parseMoney(data.spentUsd, 0);
+    const reservedUsd = parseMoney(data.reservedUsd, 0);
+
+    if (spentUsd + reservedUsd + estimatedUsd > budgetUsd) {
+      throw new Error(
+        `Monthly recap AI budget reached. Budget: $${budgetUsd.toFixed(
+          2,
+        )}, used or reserved: $${(spentUsd + reservedUsd).toFixed(2)}.`,
+      );
+    }
+
+    transaction.set(
+      usageRef,
+      {
+        budgetUsd,
+        monthKey,
+        reservedUsd: reservedUsd + estimatedUsd,
+        spentUsd,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+
+    return { budgetUsd, monthKey };
+  });
+};
+
+const finishRecapBudgetReservation = async ({
+  actualUsd,
+  estimatedUsd,
+  familyId,
+  monthKey,
+}: {
+  actualUsd: number;
+  estimatedUsd: number;
+  familyId: string;
+  monthKey: string;
+}) => {
+  const usageRef = familyRecapUsageRef(familyId, monthKey);
+  await db.runTransaction(async (transaction) => {
+    const usageSnap = await transaction.get(usageRef);
+    const data = usageSnap.exists ? (usageSnap.data() ?? {}) : {};
+    const spentUsd = parseMoney(data.spentUsd, 0);
+    const reservedUsd = parseMoney(data.reservedUsd, 0);
+
+    transaction.set(
+      usageRef,
+      {
+        reservedUsd: Math.max(0, reservedUsd - estimatedUsd),
+        spentUsd: spentUsd + actualUsd,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+  });
+};
+
+const releaseRecapBudgetReservation = async ({
+  estimatedUsd,
+  familyId,
+  monthKey,
+}: {
+  estimatedUsd: number;
+  familyId: string;
+  monthKey: string;
+}) => {
+  const usageRef = familyRecapUsageRef(familyId, monthKey);
+  await db.runTransaction(async (transaction) => {
+    const usageSnap = await transaction.get(usageRef);
+    const data = usageSnap.exists ? (usageSnap.data() ?? {}) : {};
+    const reservedUsd = parseMoney(data.reservedUsd, 0);
+
+    transaction.set(
+      usageRef,
+      {
+        reservedUsd: Math.max(0, reservedUsd - estimatedUsd),
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true },
+    );
+  });
+};
+
+const recapTextFromPost = (post: MemoryPost) =>
+  richTextPlainText(normalizeRichTextDocument(post.content)) ||
+  optionalString(post.body) ||
+  "";
+
+const mediaKind = (media: MemoryMedia) => optionalString(media.kind) ?? "image";
+
+const mediaDurationMs = (media: MemoryMedia) =>
+  optionalNumber(media.durationMs);
+
+const recapMediaSnapshots = (
+  media: MemoryMedia[],
+): MemoryRecapMediaSnapshot[] =>
+  media
+    .map((item): MemoryRecapMediaSnapshot | null => {
+      const id = optionalString(item.id);
+      const kind = mediaKind(item);
+      if (!id || !["image", "video", "audio"].includes(kind)) {
+        return null;
+      }
+      return {
+        id,
+        kind,
+        uri: optionalString(item.uri),
+        thumbnailUri: optionalString(item.thumbnailUri),
+        durationMs: mediaDurationMs(item),
+      };
+    })
+    .filter((item): item is MemoryRecapMediaSnapshot => Boolean(item));
+
+const scoreMemoryForRecap = ({
+  body,
+  media,
+  post,
+  transcript,
+}: {
+  body: string;
+  media: MemoryMedia[];
+  post: MemoryPost;
+  transcript: string;
+}) => {
+  const wordCount = `${body} ${transcript}`.split(/\s+/).filter(Boolean).length;
+  const hasImage = media.some((item) => mediaKind(item) === "image");
+  const hasAudio = transcript.length > 0;
+  const comments = Array.isArray(post.comments) ? post.comments.length : 0;
+  const reactions =
+    post.reactions && typeof post.reactions === "object"
+      ? Object.values(post.reactions as Record<string, unknown>).reduce<number>(
+          (count, value) => count + (Array.isArray(value) ? value.length : 0),
+          0,
+        )
+      : 0;
+
+  return (
+    Math.min(1.2, wordCount / 60) +
+    (hasImage ? 0.45 : 0) +
+    (hasAudio ? 0.55 : 0) +
+    Math.min(0.5, comments * 0.2 + reactions * 0.15)
+  );
+};
+
+const sourceFromCandidate = (
+  candidate: RecapCandidateMemory,
+): MemoryRecapSource => ({
+  id: candidate.id,
+  authorId: candidate.authorId,
+  bodyPreview: candidate.body
+    ? clampText(candidate.body.replace(/\s+/g, " "), 1600)
+    : undefined,
+  createdAt: candidate.createdAt,
+  media: recapMediaSnapshots(candidate.media),
+  transcriptPreview: candidate.transcript
+    ? clampText(candidate.transcript.replace(/\s+/g, " "), 1600)
+    : undefined,
+});
+
+const driveOrStorageMediaBuffer = async ({
+  accessToken,
+  media,
+}: {
+  accessToken?: string;
+  media: MemoryMedia;
+}) => {
+  const originalStorage = googleDriveOriginalStorageFromMedia(media);
+  if (originalStorage && accessToken) {
+    const response = await fetch(
+      driveMediaDownloadUri(originalStorage.fileId),
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+    if (!response.ok) {
+      throw new Error("Could not download audio from Drive.");
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  const storagePath = optionalString(media.storagePath);
+  if (storagePath) {
+    const [buffer] = await getStorage().bucket().file(storagePath).download();
+    return buffer;
+  }
+
+  throw new Error("Audio original is not available for transcription.");
+};
+
+const transcriptCacheRef = ({
+  familyId,
+  mediaId,
+  postId,
+}: {
+  familyId: string;
+  mediaId: string;
+  postId: string;
+}) => db.doc(`families/${familyId}/posts/${postId}/aiTranscripts/${mediaId}`);
+
+const openAiAuthorizationHeaders = () => {
+  const apiKey = openAiApiKey.value();
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not configured.");
+  }
+  return { Authorization: `Bearer ${apiKey}` };
+};
+
+const transcribeAudioMemory = async ({
+  accessToken,
+  familyId,
+  media,
+  postId,
+}: {
+  accessToken?: string;
+  familyId: string;
+  media: MemoryMedia;
+  postId: string;
+}) => {
+  const mediaId = requireString(media.id, "media.id");
+  const cacheRef = transcriptCacheRef({ familyId, mediaId, postId });
+  const cached = await cacheRef.get();
+  const cachedText = optionalString(cached.data()?.text);
+  if (cachedText) {
+    return cachedText;
+  }
+
+  const buffer = await driveOrStorageMediaBuffer({ accessToken, media });
+  const mimeType = optionalString(media.mimeType) ?? "audio/mp4";
+  const fileName = fileNameFromMedia(media, 0);
+  const audioArrayBuffer = new ArrayBuffer(buffer.byteLength);
+  new Uint8Array(audioArrayBuffer).set(buffer);
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob([audioArrayBuffer], { type: mimeType }),
+    sanitizeHeaderValue(fileName),
+  );
+  formData.append("model", recapTranscriptionModel);
+  formData.append("response_format", "json");
+
+  const response = await fetch(openAiTranscriptionUrl, {
+    body: formData,
+    headers: openAiAuthorizationHeaders(),
+    method: "POST",
+  });
+  const payload = (await response.json()) as OpenAiTranscriptionPayload;
+  if (!response.ok || payload.error) {
+    throw new Error(
+      payload.error?.message ?? "OpenAI did not transcribe the audio memory.",
+    );
+  }
+
+  const text = optionalString(payload.text) ?? "";
+  await cacheRef.set(
+    {
+      createdAt: new Date().toISOString(),
+      mediaId,
+      model: recapTranscriptionModel,
+      text,
+    },
+    { merge: true },
+  );
+  return text;
+};
+
+const audioTranscriptCostUsd = (durationMs: number) =>
+  (durationMs / 60_000) * 0.003;
+
+const buildRecapCandidates = async ({
+  familyId,
+  periodEnd,
+  periodStart,
+}: {
+  familyId: string;
+  periodEnd: string;
+  periodStart: string;
+}) => {
+  const postsSnap = await db
+    .collection(`families/${familyId}/posts`)
+    .where("createdAt", ">=", periodStart)
+    .where("createdAt", "<", periodEnd)
+    .orderBy("createdAt", "asc")
+    .get();
+  const candidates: RecapCandidateMemory[] = [];
+  const accessTokensByAuthor = new Map<string, Promise<string | undefined>>();
+  const postCountsByAuthor = new Map<string, number>();
+  let transcriptedAudioCount = 0;
+  let transcriptedAudioMs = 0;
+  let transcriptionCostUsd = 0;
+
+  for (const doc of postsSnap.docs) {
+    const post = doc.data() as MemoryPost;
+    const body = recapTextFromPost(post);
+    const media = normalizePostMedia(post.media);
+    const authorId = optionalString(post.authorId) ?? "";
+    const transcripts: string[] = [];
+    if (authorId) {
+      postCountsByAuthor.set(
+        authorId,
+        (postCountsByAuthor.get(authorId) ?? 0) + 1,
+      );
+    }
+
+    for (const item of media) {
+      if (mediaKind(item) !== "audio") {
+        continue;
+      }
+
+      const durationMs = mediaDurationMs(item);
+      if (
+        !durationMs ||
+        durationMs > maxAudioTranscriptDurationMs ||
+        transcriptedAudioCount >= maxAudioTranscriptCount ||
+        transcriptedAudioMs + durationMs > maxAudioTranscriptTotalMs
+      ) {
+        continue;
+      }
+
+      try {
+        const accessTokenPromise =
+          accessTokensByAuthor.get(authorId) ??
+          connectedGoogleDeliveryPrivateStateForMember({
+            familyId,
+            memberId: authorId,
+          }).then((privateState) => {
+            const refreshToken = optionalString(privateState.refreshToken);
+            return refreshToken
+              ? refreshGoogleAccessToken(refreshToken)
+              : undefined;
+          });
+        accessTokensByAuthor.set(authorId, accessTokenPromise);
+        const transcript = await transcribeAudioMemory({
+          accessToken: await accessTokenPromise,
+          familyId,
+          media: item,
+          postId: doc.id,
+        });
+        if (transcript) {
+          transcripts.push(transcript);
+          transcriptedAudioCount += 1;
+          transcriptedAudioMs += durationMs;
+          transcriptionCostUsd += audioTranscriptCostUsd(durationMs);
+        }
+      } catch (error) {
+        logger.warn("Audio transcription skipped", {
+          error: error instanceof Error ? error.message : String(error),
+          familyId,
+          mediaId: optionalString(item.id),
+          postId: doc.id,
+        });
+      }
+    }
+
+    const transcript = transcripts.join("\n").trim();
+    if (!body && !transcript && media.length === 0) {
+      continue;
+    }
+
+    candidates.push({
+      authorId,
+      body,
+      createdAt: optionalString(post.createdAt) ?? new Date().toISOString(),
+      id: doc.id,
+      media,
+      score: scoreMemoryForRecap({ body, media, post, transcript }),
+      transcript,
+    });
+  }
+
+  return {
+    candidates: candidates
+      .sort((first, second) => second.score - first.score)
+      .slice(0, maxRecapInputMemories)
+      .sort((first, second) => first.createdAt.localeCompare(second.createdAt)),
+    contributorSummaries: Array.from(
+      postCountsByAuthor,
+      ([authorId, postCount]) => ({ authorId, postCount }),
+    ).sort(
+      (first, second) =>
+        second.postCount - first.postCount ||
+        first.authorId.localeCompare(second.authorId),
+    ),
+    transcriptionCostUsd,
+  };
+};
+
+const recapResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["title", "subtitle", "mood", "sections"],
+  properties: {
+    title: { type: "string" },
+    subtitle: { type: "string" },
+    mood: {
+      type: "string",
+      enum: ["tender", "playful", "quiet", "busy", "milestone", "ordinary"],
+    },
+    sections: {
+      type: "array",
+      minItems: 1,
+      maxItems: 6,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "type", "title", "body", "memoryIds", "quote"],
+        properties: {
+          id: { type: "string" },
+          type: {
+            type: "string",
+            enum: ["opening", "chapter", "quote", "audio", "letter"],
+          },
+          title: { type: "string" },
+          body: { type: "string" },
+          memoryIds: {
+            type: "array",
+            minItems: 0,
+            maxItems: 8,
+            items: { type: "string" },
+          },
+          quote: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+const openAiResponseText = (payload: OpenAiResponsePayload) => {
+  if (optionalString(payload.output_text)) {
+    return payload.output_text;
+  }
+
+  return (
+    payload.output
+      ?.flatMap((item) => item.content ?? [])
+      .map((item) => item.text)
+      .filter((text): text is string => Boolean(text))
+      .join("\n")
+      .trim() ?? ""
+  );
+};
+
+const responseUsageCostUsd = (usage?: OpenAiUsage) => {
+  const inputTokens = optionalNumber(usage?.input_tokens) ?? 0;
+  const outputTokens = optionalNumber(usage?.output_tokens) ?? 0;
+  return (inputTokens / 1_000_000) * 0.2 + (outputTokens / 1_000_000) * 1.25;
+};
+
+const recapVisionImageInputs = async (candidates: RecapCandidateMemory[]) => {
+  const inputs: Array<{
+    imageRef: string;
+    memoryId: string;
+    dataUri: string;
+  }> = [];
+
+  for (const candidate of candidates) {
+    for (const media of candidate.media) {
+      if (inputs.length >= maxRecapVisionImages) {
+        return inputs;
+      }
+      if (mediaKind(media) !== "image") {
+        continue;
+      }
+
+      const storagePath =
+        optionalString(media.thumbnailStoragePath) ??
+        optionalString(media.storagePath);
+      if (!storagePath) {
+        continue;
+      }
+
+      try {
+        const [buffer] = await getStorage()
+          .bucket()
+          .file(storagePath)
+          .download();
+        const jpeg = await sharp(buffer)
+          .rotate()
+          .resize({
+            fit: "inside",
+            width: recapVisionImageMaxWidth,
+            withoutEnlargement: true,
+          })
+          .jpeg({ quality: recapVisionImageQuality, mozjpeg: true })
+          .toBuffer();
+        inputs.push({
+          dataUri: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+          imageRef: `image_${inputs.length + 1}`,
+          memoryId: candidate.id,
+        });
+      } catch (error) {
+        logger.warn("Recap vision image skipped", {
+          error: error instanceof Error ? error.message : String(error),
+          mediaId: optionalString(media.id),
+          memoryId: candidate.id,
+          storagePath,
+        });
+      }
+    }
+  }
+
+  return inputs;
+};
+
+const generateRecapWithOpenAi = async ({
+  candidates,
+  childName,
+  familyId,
+  membersById,
+  periodEnd,
+  periodKind,
+  periodStart,
+}: {
+  candidates: RecapCandidateMemory[];
+  childName: string;
+  familyId: string;
+  membersById: Map<string, { displayName: string; id: string }>;
+  periodEnd: string;
+  periodKind: MemoryRecapPeriodKind;
+  periodStart: string;
+}) => {
+  const validMemoryIds = new Set(candidates.map((candidate) => candidate.id));
+  const visionImages = await recapVisionImageInputs(candidates);
+  const modelInput = {
+    childName,
+    familyId,
+    period: { kind: periodKind, start: periodStart, end: periodEnd },
+    memories: candidates.map((candidate) => ({
+      id: candidate.id,
+      authorName:
+        membersById.get(candidate.authorId)?.displayName ?? "A parent",
+      createdAt: candidate.createdAt,
+      imageRefs: visionImages
+        .filter((image) => image.memoryId === candidate.id)
+        .map((image) => image.imageRef),
+      mediaKinds: candidate.media.map(mediaKind),
+      text: clampText(candidate.body, 900),
+      audioTranscript: clampText(candidate.transcript, 900),
+      score: Number(candidate.score.toFixed(2)),
+    })),
+  };
+  const inputContent: OpenAiInputContent[] = [
+    {
+      type: "input_text",
+      text: JSON.stringify(modelInput),
+    },
+    ...visionImages.flatMap((image): OpenAiInputContent[] => [
+      {
+        type: "input_text",
+        text: `${image.imageRef} belongs to memory ${image.memoryId}.`,
+      },
+      {
+        detail: "low",
+        image_url: image.dataUri,
+        type: "input_image",
+      },
+    ]),
+  ];
+  const requestBody = (content: OpenAiInputContent[]) =>
+    JSON.stringify({
+      input: [
+        {
+          role: "system",
+          content:
+            "You select and group family memories for a media-first baby recap for the parents. The UI is photos/videos/audio first. Write for the parents, not for the child. Never address the child in second person; do not use you, your, yours, or phrases like your parents. Do not write commentary about individual notes, photos, parents, or posts. Do not quote parents. Use only facts in the supplied memories and image inputs. Do not invent milestones, preferences, locations, objects, or feelings. Media labels must be visually grounded: when a memory has imageRefs, use the visible images as the source of truth for section titles. If text/audio and visible images disagree, title the section from what is visible in the media, or use a neutral label like Everyday snapshots. Text/audio can help pick memories and write the one subtitle, but must not override visible media for grouping labels. Title must be short and media-oriented, such as This month in pictures. Subtitle must be one grounded parent-facing sentence about what we captured during the period. Sections are only grouping labels plus memory IDs. Section body and quote must be empty strings. Section titles should be 2-5 words, like Sleepy evenings, Toy time, Family faces, Tiny milestones. Every section must cite memoryIds that support the group.",
+        },
+        {
+          role: "user",
+          content,
+        },
+      ],
+      model: recapModel,
+      text: {
+        format: {
+          name: "memory_recap",
+          schema: recapResponseSchema,
+          strict: true,
+          type: "json_schema",
+        },
+      },
+    });
+  let response = await fetch(openAiResponsesUrl, {
+    body: requestBody(inputContent),
+    headers: {
+      ...openAiAuthorizationHeaders(),
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  let payload = (await response.json()) as OpenAiResponsePayload;
+  if (!response.ok && visionImages.length > 0) {
+    logger.warn("OpenAI recap vision request failed; retrying without images", {
+      familyId,
+      status: response.status,
+      error: payload.error?.message,
+    });
+    response = await fetch(openAiResponsesUrl, {
+      body: requestBody([
+        { type: "input_text", text: JSON.stringify(modelInput) },
+      ]),
+      headers: {
+        ...openAiAuthorizationHeaders(),
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    payload = (await response.json()) as OpenAiResponsePayload;
+  }
+  if (!response.ok || payload.error) {
+    throw new Error(
+      payload.error?.message ?? "OpenAI did not generate the recap.",
+    );
+  }
+
+  const text = openAiResponseText(payload);
+  if (!text) {
+    throw new Error("OpenAI returned an empty recap.");
+  }
+
+  const parsed = JSON.parse(text) as {
+    mood?: unknown;
+    sections?: unknown;
+    subtitle?: unknown;
+    title?: unknown;
+  };
+  const sections = Array.isArray(parsed.sections)
+    ? parsed.sections
+        .map((section, index): MemoryRecapSection | null => {
+          if (!section || typeof section !== "object") {
+            return null;
+          }
+          const data = section as Record<string, unknown>;
+          const type = optionalString(data.type);
+          if (
+            !type ||
+            !["opening", "chapter", "quote", "audio", "letter"].includes(type)
+          ) {
+            return null;
+          }
+          const memoryIds = Array.isArray(data.memoryIds)
+            ? data.memoryIds
+                .map(optionalString)
+                .filter((id): id is string => Boolean(id))
+                .filter((id) => validMemoryIds.has(id))
+            : [];
+
+          return {
+            id: optionalString(data.id) ?? `section_${index + 1}`,
+            type: type as MemoryRecapSectionType,
+            title: optionalString(data.title) ?? "A small moment",
+            body: "",
+            memoryIds,
+            quote: undefined,
+          };
+        })
+        .filter((section): section is MemoryRecapSection => Boolean(section))
+    : [];
+
+  if (sections.length === 0) {
+    throw new Error("OpenAI returned a recap without sections.");
+  }
+
+  return {
+    costUsd: responseUsageCostUsd(payload.usage),
+    mood: optionalString(parsed.mood) as MemoryRecapMood | undefined,
+    sections,
+    subtitle: parentFacingText(optionalString(parsed.subtitle)),
+    title: optionalString(parsed.title) ?? `${childName}'s recap`,
+    usage: payload.usage,
+  };
+};
+
+const emptyRecapForPeriod = ({
+  childName,
+  periodKind,
+}: {
+  childName: string;
+  periodKind: MemoryRecapPeriodKind;
+}) => ({
+  costUsd: 0,
+  mood: "quiet" as MemoryRecapMood,
+  sections: [
+    {
+      id: "opening",
+      type: "opening" as MemoryRecapSectionType,
+      title: "A quiet stretch",
+      body: "No new memories were saved in this period.",
+      memoryIds: [],
+    },
+  ],
+  subtitle: "Nothing was added yet.",
+  title:
+    periodKind === "year"
+      ? `${childName}'s quiet year`
+      : `${childName}'s quiet ${periodKind}`,
+  usage: undefined,
+});
+
+const buildReadyRecap = ({
+  candidates,
+  contributorSummaries,
+  familyId,
+  generated,
+  periodEnd,
+  periodKind,
+  periodStart,
+  recapId,
+  requestedBy,
+  timezone,
+}: {
+  candidates: RecapCandidateMemory[];
+  contributorSummaries: MemoryRecapContributorSummary[];
+  familyId: string;
+  generated: Awaited<ReturnType<typeof generateRecapWithOpenAi>>;
+  periodEnd: string;
+  periodKind: MemoryRecapPeriodKind;
+  periodStart: string;
+  recapId: string;
+  requestedBy: string;
+  timezone?: string;
+}): MemoryRecap => {
+  const now = new Date().toISOString();
+
+  return {
+    id: recapId,
+    familyId,
+    periodKind,
+    periodStart,
+    periodEnd,
+    timezone,
+    status: "ready",
+    title: generated.title,
+    subtitle: generated.subtitle,
+    mood: generated.mood,
+    sections: generated.sections,
+    sources: candidates.map(sourceFromCandidate),
+    sourceMemoryIds: candidates.map((candidate) => candidate.id),
+    contributorSummaries,
+    requestedBy,
+    createdAt: now,
+    updatedAt: now,
+    readyAt: now,
+    notificationStatus:
+      recapNotificationsEnabled.value() === "true" ? "pending" : "disabled",
+  };
 };
 
 type NormalizedMemoryComment = {
@@ -794,6 +1774,294 @@ const sendMemoryActivityNotifications = async ({
     recipientDeviceCount: messages.length,
   });
 };
+
+const sendRecapReadyNotification = async (recap: MemoryRecap) => {
+  if (recapNotificationsEnabled.value() !== "true") {
+    return "disabled" as const;
+  }
+
+  const tokens = await fetchRegisteredPushTokens({
+    familyId: recap.familyId,
+    memberIds: [recap.requestedBy],
+  });
+  const messages = tokens.map(
+    (token): PendingExpoPushMessage => ({
+      body: recap.subtitle ?? "Your memory recap is ready.",
+      data: {
+        familyId: recap.familyId,
+        recapId: recap.id,
+        type: "recap-ready",
+      },
+      sound: "default",
+      title: recap.title,
+      to: token.token,
+      tokenRef: token.ref,
+    }),
+  );
+
+  if (messages.length === 0) {
+    return "sent" as const;
+  }
+
+  await sendExpoPushMessages(messages);
+  return "sent" as const;
+};
+
+const generateMemoryRecap = async ({
+  familyId,
+  periodEnd,
+  periodKind,
+  periodStart,
+  recapId,
+  requestedBy,
+  timezone,
+}: {
+  familyId: string;
+  periodEnd: string;
+  periodKind: MemoryRecapPeriodKind;
+  periodStart: string;
+  recapId: string;
+  requestedBy: string;
+  timezone?: string;
+}) => {
+  const [familySnap, membersById, candidateResult] = await Promise.all([
+    db.doc(`families/${familyId}`).get(),
+    fetchFamilyMemberSummaries(familyId),
+    buildRecapCandidates({ familyId, periodEnd, periodStart }),
+  ]);
+  const family = familySnap.data() ?? {};
+  const childName = optionalString(family.childName) ?? "your child";
+  const generated =
+    candidateResult.candidates.length > 0
+      ? await generateRecapWithOpenAi({
+          candidates: candidateResult.candidates,
+          childName,
+          familyId,
+          membersById,
+          periodEnd,
+          periodKind,
+          periodStart,
+        })
+      : emptyRecapForPeriod({ childName, periodKind });
+  const recap = buildReadyRecap({
+    candidates: candidateResult.candidates,
+    contributorSummaries: candidateResult.contributorSummaries,
+    familyId,
+    generated,
+    periodEnd,
+    periodKind,
+    periodStart,
+    recapId,
+    requestedBy,
+    timezone,
+  });
+
+  return {
+    actualCostUsd: generated.costUsd + candidateResult.transcriptionCostUsd,
+    recap,
+    usage: generated.usage,
+    transcriptionCostUsd: candidateResult.transcriptionCostUsd,
+  };
+};
+
+export const processMemoryRecapRequest = onDocumentCreated(
+  {
+    database: firestoreDatabaseId,
+    document: "families/{familyId}/recapRequests/{requestId}",
+    memory: "1GiB",
+    region: storageFunctionRegion,
+    secrets: [googleOauthClientSecret, openAiApiKey],
+    timeoutSeconds: 540,
+  },
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot?.exists) {
+      return;
+    }
+
+    const requestData = snapshot.data() as MemoryRecapRequest;
+    const familyId = requireString(event.params.familyId, "familyId");
+    const recapId = requireString(requestData.recapId, "recapId");
+    const requestedBy = requireString(requestData.requestedBy, "requestedBy");
+    const periodKind = requestData.periodKind;
+    if (!isRecapPeriodKind(periodKind)) {
+      throw new Error("Invalid recap period kind.");
+    }
+    const periodStart = parseIsoDate(
+      requestData.periodStart,
+      "periodStart",
+    ).toISOString();
+    const periodEnd = parseIsoDate(
+      requestData.periodEnd,
+      "periodEnd",
+    ).toISOString();
+    const timezone = optionalString(requestData.timezone);
+    const recapRef = db.doc(`families/${familyId}/recaps/${recapId}`);
+    const now = new Date().toISOString();
+
+    const claimed = await db.runTransaction(async (transaction) => {
+      const recapSnap = await transaction.get(recapRef);
+      const status = optionalString(recapSnap.data()?.status);
+      if (status && status !== "failed") {
+        return false;
+      }
+      transaction.set(
+        recapRef,
+        removeUndefinedFields({
+          id: recapId,
+          familyId,
+          periodKind,
+          periodStart,
+          periodEnd,
+          timezone,
+          title: "Building recap",
+          sections: [],
+          sources: [],
+          sourceMemoryIds: [],
+          requestedBy,
+          createdAt:
+            optionalString(recapSnap.data()?.createdAt) ??
+            optionalString(requestData.createdAt) ??
+            now,
+          errorMessage: FieldValue.delete(),
+          notificationStatus:
+            recapNotificationsEnabled.value() === "true"
+              ? "pending"
+              : "disabled",
+          status: "processing",
+          processingStartedAt: now,
+          updatedAt: now,
+        }) as Record<string, unknown>,
+        { merge: true },
+      );
+      transaction.set(
+        snapshot.ref,
+        removeUndefinedFields({
+          status: "processing",
+          updatedAt: now,
+        }) as Record<string, unknown>,
+        { merge: true },
+      );
+      return true;
+    });
+
+    if (!claimed) {
+      return;
+    }
+
+    let reservation:
+      | {
+          budgetUsd: number;
+          monthKey: string;
+        }
+      | undefined;
+
+    try {
+      reservation = await reserveRecapBudget({
+        estimatedUsd: recapGenerationReserveUsd,
+        familyId,
+      });
+      const { actualCostUsd, recap, transcriptionCostUsd, usage } =
+        await generateMemoryRecap({
+          familyId,
+          periodEnd,
+          periodKind,
+          periodStart,
+          recapId,
+          requestedBy,
+          timezone,
+        });
+      await recapRef.set(
+        removeUndefinedFields({
+          ...recap,
+          generation: {
+            budgetUsd: reservation.budgetUsd,
+            estimatedCostUsd: Number(actualCostUsd.toFixed(6)),
+            model: recapModel,
+            transcriptionCostUsd: Number(transcriptionCostUsd.toFixed(6)),
+            transcriptionModel: recapTranscriptionModel,
+            usage,
+          },
+          errorMessage: FieldValue.delete(),
+        }) as Record<string, unknown>,
+        { merge: true },
+      );
+      const notificationStatus = await sendRecapReadyNotification(recap).catch(
+        (error) => {
+          logger.warn("Recap ready notification failed", {
+            error: error instanceof Error ? error.message : String(error),
+            familyId,
+            recapId,
+          });
+          return "failed" as const;
+        },
+      );
+      await Promise.all([
+        recapRef.set(
+          removeUndefinedFields({
+            notificationStatus,
+            updatedAt: new Date().toISOString(),
+          }) as Record<string, unknown>,
+          { merge: true },
+        ),
+        snapshot.ref.set(
+          removeUndefinedFields({
+            finishedAt: new Date().toISOString(),
+            status: "ready",
+            updatedAt: new Date().toISOString(),
+          }) as Record<string, unknown>,
+          { merge: true },
+        ),
+        finishRecapBudgetReservation({
+          actualUsd: actualCostUsd,
+          estimatedUsd: recapGenerationReserveUsd,
+          familyId,
+          monthKey: reservation.monthKey,
+        }),
+      ]);
+
+      logger.info("Generated memory recap", {
+        actualCostUsd,
+        familyId,
+        recapId,
+        sourceCount: recap.sourceMemoryIds.length,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await Promise.all([
+        recapRef.set(
+          {
+            errorMessage: message,
+            status: "failed",
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true },
+        ),
+        snapshot.ref.set(
+          {
+            errorMessage: message,
+            finishedAt: new Date().toISOString(),
+            status: "failed",
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true },
+        ),
+        reservation
+          ? releaseRecapBudgetReservation({
+              estimatedUsd: recapGenerationReserveUsd,
+              familyId,
+              monthKey: reservation.monthKey,
+            })
+          : Promise.resolve(),
+      ]);
+      logger.error("Memory recap generation failed", {
+        error: message,
+        familyId,
+        recapId,
+      });
+    }
+  },
+);
 
 const assertGoogleJsonResponse = async <T extends { error?: unknown }>(
   response: Response,

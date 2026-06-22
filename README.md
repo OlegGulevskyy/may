@@ -95,6 +95,21 @@ firebase functions:secrets:set GOOGLE_OAUTH_CLIENT_SECRET
 For local function emulator testing, put the same value in
 `apps/functions/.secret.local`.
 
+8. Store the OpenAI API key for recap generation in Firebase Secret Manager:
+
+```sh
+firebase functions:secrets:set OPENAI_API_KEY
+```
+
+Keep `RECAP_NOTIFICATIONS_ENABLED=false` in `apps/functions/.env.local` while
+recaps are being tested against production data. To override the default `$5`
+monthly family recap budget, create or edit
+`families/{familyId}/private/recapConfig` in Firestore with:
+
+```json
+{ "monthlyBudgetUsd": 5 }
+```
+
 The Settings screen asks parents to grant only
 `https://www.googleapis.com/auth/gmail.send` and
 `https://www.googleapis.com/auth/drive.file`. The app writes a one-time
@@ -108,9 +123,9 @@ connected Drive account, shares those files with the child email, sends the
 child a Gmail message from that author's Gmail account, and marks the post
 `delivered`.
 
-8. The app uses the signed-in Firebase Auth uid as the family member id and
+9. The app uses the signed-in Firebase Auth uid as the family member id and
    stores the active family on `users/{uid}`.
-9. Deploy rules/functions when ready:
+10. Deploy rules/functions when ready:
 
 ```sh
 firebase deploy --only firestore:may-default,storage,functions
