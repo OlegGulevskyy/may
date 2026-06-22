@@ -71,6 +71,7 @@ import {
 } from "@may/core";
 
 import type { MemoryDraft } from "../hooks/useDrafts";
+import { useIsAppUpdateAvailable } from "../hooks/useAppUpdates";
 import { useMemoryNudges } from "../hooks/useMemoryNudges";
 import { useAppState } from "../state/AppState";
 import { useMemoryWallContext } from "../state/MemoryWallProvider";
@@ -570,6 +571,8 @@ function BottomTabs({
   onChange: (tab: WallTab) => void;
   onNew: () => void;
 }) {
+  const hasUpdate = useIsAppUpdateAvailable();
+
   return (
     <View pointerEvents="box-none" style={styles.tabDock}>
       <GlassCard intensity={64} lifted highlight={false} style={styles.tabBar}>
@@ -597,8 +600,9 @@ function BottomTabs({
         <TabButton
           active={activeTab === "settings"}
           icon={Settings}
-          label="Settings"
+          label={hasUpdate ? "Settings, update available" : "Settings"}
           onPress={() => onChange("settings")}
+          showBadge={hasUpdate}
         />
       </GlassCard>
     </View>
@@ -610,11 +614,13 @@ function TabButton({
   icon: Icon,
   label,
   onPress,
+  showBadge,
 }: {
   active: boolean;
   icon: typeof House;
   label: string;
   onPress: () => void;
+  showBadge?: boolean;
 }) {
   return (
     <Pressable
@@ -630,7 +636,10 @@ function TabButton({
         pressed ? styles.tabButtonPressed : null,
       ]}
     >
-      <Icon color={active ? palette.ink : palette.inkFaint} size={23} />
+      <View>
+        <Icon color={active ? palette.ink : palette.inkFaint} size={23} />
+        {showBadge ? <View style={styles.tabNotificationDot} /> : null}
+      </View>
     </Pressable>
   );
 }
@@ -2332,6 +2341,17 @@ const styles = StyleSheet.create({
   },
   tabButtonPressed: {
     transform: [{ scale: 0.96 }],
+  },
+  tabNotificationDot: {
+    backgroundColor: "#d92d20",
+    borderColor: palette.rim,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    height: 9,
+    position: "absolute",
+    right: -3,
+    top: -4,
+    width: 9,
   },
   backToFirstPostDock: {
     bottom: 88,

@@ -7,6 +7,8 @@
     "dev": "expo start",
     "dev:client": "expo start --dev-client",
     "eas-build-post-install": "cd ../.. && pnpm --filter @may/core --filter @may/ui build",
+    "update:prod": "pnpm dlx eas-cli@latest update --channel production --environment production --platform ios",
+    "update:preview": "pnpm dlx eas-cli@latest update --channel preview --environment preview --platform ios",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "eject": "expo eject"
@@ -34,6 +36,7 @@
     "expo-router": "~56.2.10",
     "expo-status-bar": "~56.0.4",
     "expo-system-ui": "~56.0.5",
+    "expo-updates": "~56.0.19",
     "expo-video": "~56.1.4",
     "expo-video-thumbnails": "~56.0.3",
     "firebase": "^12.14.0",

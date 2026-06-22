@@ -18,12 +18,15 @@ import {
   ChevronRight,
   Clock,
   CloudUpload,
+  Download,
   HardDrive,
   Image as ImageIcon,
   LogOut,
   MailCheck,
   MailPlus,
   Mic,
+  RefreshCw,
+  Smartphone,
   Trash2,
   UserPlus,
   Users,
@@ -36,6 +39,17 @@ import { Surface } from "../ui/Glass";
 import { HapticPressable as Pressable } from "../ui/HapticPressable";
 import type { FamilyMembership } from "../state/AppState";
 import type { ProfilePhotoInput } from "../services/familyBackend";
+import {
+  getGitSha,
+  getNativeAppVersion,
+  getNativeBuildVersion,
+  toShortHash,
+} from "../services/updates";
+import {
+  isRuntimeUpdateEnabled,
+  useAppUpdateActions,
+  useAppUpdatesState,
+} from "../hooks/useAppUpdates";
 import {
   clearImageCache,
   getImageCacheSizeBytes,
@@ -147,9 +161,36 @@ export function SettingsPanel({
   const [switchingFamilyId, setSwitchingFamilyId] = useState<string | null>(
     null,
   );
+  const [updateReloadBusy, setUpdateReloadBusy] = useState(false);
+  const updateState = useAppUpdatesState();
+  const { checkForUpdates, reloadUpdate, isChecking } = useAppUpdateActions();
   const deliveryConnected = googleDeliveryConnection?.status === "connected";
   const deliveryNeedsReconnect =
     googleDeliveryConnection?.status === "needs_reconnect";
+  const currentHash = toShortHash(getGitSha());
+  const availableHash = toShortHash(
+    updateState.availableUpdate?.gitSha ?? updateState.availableUpdate?.id,
+  );
+  const lastCheckedLabel = formatUpdateTimestamp(updateState.lastCheckedAt);
+  const updateBusy = updateState.isChecking || isChecking || updateReloadBusy;
+  const updateStatusValue = updateReloadBusy
+    ? "Restarting"
+    : updateState.isChecking || isChecking
+      ? "Checking"
+      : !isRuntimeUpdateEnabled
+        ? "Release only"
+        : updateState.isAvailable
+          ? "Ready"
+          : updateState.error
+            ? "Error"
+            : "Up to date";
+  const updateStatusDetail = updateStatusDescription({
+    availableHash,
+    error: updateState.error,
+    isAvailable: updateState.isAvailable,
+    lastCheckedLabel,
+  });
+  const appVersionDetail = formatAppVersionDetail();
 
   const loadCacheSize = useCallback(async () => {
     try {
@@ -480,6 +521,69 @@ export function SettingsPanel({
     [loadPermissions, onRefreshMemoryNudgeSchedule, onRefreshPushNotifications],
   );
 
+  const checkForAppUpdates = useCallback(() => {
+    if (!isRuntimeUpdateEnabled) {
+      Alert.alert(
+        "Updates unavailable",
+        "OTA updates are only available in release builds installed from TestFlight or the App Store.",
+      );
+      return;
+    }
+
+    checkForUpdates()
+      .then((result) => {
+        if ("error" in result && result.error) {
+          Alert.alert("Could not check for updates", result.error);
+          return;
+        }
+
+        if (result.isAvailable) {
+          Alert.alert(
+            "Update ready",
+            "A new version has downloaded. Restart Dinomay to apply it.",
+          );
+          return;
+        }
+
+        Alert.alert(
+          "Dinomay is up to date",
+          "No JavaScript update is available for this build.",
+        );
+      })
+      .catch((error) =>
+        Alert.alert("Could not check for updates", getErrorMessage(error)),
+      );
+  }, [checkForUpdates]);
+
+  const confirmInstallUpdate = useCallback(() => {
+    if (!isRuntimeUpdateEnabled) {
+      Alert.alert(
+        "Updates unavailable",
+        "OTA updates are only available in release builds installed from TestFlight or the App Store.",
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Restart and update?",
+      "Dinomay will restart and open the downloaded version.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restart",
+          onPress: () => {
+            setUpdateReloadBusy(true);
+            reloadUpdate()
+              .catch((error) =>
+                Alert.alert("Could not install update", getErrorMessage(error)),
+              )
+              .finally(() => setUpdateReloadBusy(false));
+          },
+        },
+      ],
+    );
+  }, [reloadUpdate]);
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -702,6 +806,35 @@ export function SettingsPanel({
       <Section title="This device">
         <Surface style={styles.group}>
           <Row
+            detail={appVersionDetail}
+            icon={<Smartphone color={palette.inkMuted} size={20} />}
+            label="App version"
+            value={currentHash ?? undefined}
+          />
+          <Row
+            detail={updateStatusDetail}
+            disabled={updateBusy}
+            divider
+            icon={<RefreshCw color={palette.moss} size={20} />}
+            label="Check for updates"
+            onPress={checkForAppUpdates}
+            showChevron
+            value={updateStatusValue}
+          />
+          {updateState.isAvailable ? (
+            <Row
+              detail="Restart Dinomay to apply the downloaded update."
+              disabled={updateBusy}
+              divider
+              icon={<Download color={palette.berry} size={20} />}
+              label="Install update"
+              onPress={confirmInstallUpdate}
+              showChevron
+              value={updateReloadBusy ? "Restarting" : "Restart"}
+            />
+          ) : null}
+          <Row
+            divider
             icon={<HardDrive color={palette.moss} size={20} />}
             label="Application cache"
             onPress={loadCacheSize}
@@ -769,21 +902,23 @@ function Row({
   divider?: boolean;
   icon: ReactNode;
   label: string;
-  onPress: () => void;
+  onPress?: () => void;
   showChevron?: boolean;
   trailingAccessory?: ReactNode;
   value?: string;
 }) {
+  const interactive = Boolean(onPress);
+
   return (
     <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
+      accessibilityRole={interactive ? "button" : undefined}
+      disabled={disabled || !interactive}
       onPress={onPress}
       style={({ pressed }) => [
         styles.row,
         divider ? styles.rowDivider : null,
         disabled ? styles.rowDisabled : null,
-        pressed ? styles.rowPressed : null,
+        pressed && interactive ? styles.rowPressed : null,
       ]}
     >
       <View style={styles.rowIcon}>{icon}</View>
@@ -1177,6 +1312,60 @@ function formatCacheSize(bytes: number) {
   }
 
   return `${mib >= 10 ? mib.toFixed(1) : mib.toFixed(2)} MB`;
+}
+
+function formatAppVersionDetail() {
+  const version = getNativeAppVersion();
+  const build = getNativeBuildVersion();
+  return build ? `Version ${version} (build ${build})` : `Version ${version}`;
+}
+
+function updateStatusDescription({
+  availableHash,
+  error,
+  isAvailable,
+  lastCheckedLabel,
+}: {
+  availableHash?: string | null;
+  error?: string | null;
+  isAvailable: boolean;
+  lastCheckedLabel?: string;
+}) {
+  if (!isRuntimeUpdateEnabled) {
+    return "Checks run in release builds after OTA is configured.";
+  }
+
+  if (isAvailable) {
+    return availableHash
+      ? `Downloaded update ${availableHash}. Restart to apply it.`
+      : "Downloaded update. Restart to apply it.";
+  }
+
+  if (error) {
+    return error;
+  }
+
+  return lastCheckedLabel
+    ? `Last checked ${lastCheckedLabel}.`
+    : "Dinomay checks automatically when opened.";
+}
+
+function formatUpdateTimestamp(value: string | undefined) {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+
+  return date.toLocaleString(undefined, {
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+  });
 }
 
 function getErrorMessage(error: unknown) {

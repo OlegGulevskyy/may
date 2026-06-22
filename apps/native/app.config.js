@@ -1,7 +1,16 @@
+const { execSync } = require("node:child_process");
 const { existsSync, readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
 const { expo } = require("./app.json");
+const { version } = require("./package.json");
+
+let gitSha = "unknown";
+try {
+  gitSha = execSync("git rev-parse --short HEAD").toString().trim();
+} catch {
+  // Git is unavailable in a few config-evaluation contexts.
+}
 
 const loadEnvFile = (fileName) => {
   const filePath = join(__dirname, fileName);
@@ -52,6 +61,7 @@ const googleIosUrlScheme =
   toIosUrlScheme(process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID);
 const iosPushMode =
   process.env.EAS_BUILD_PROFILE === "production" ? "production" : "development";
+const easProjectId = expo.extra?.eas?.projectId;
 
 const plugins = [...(expo.plugins ?? [])];
 const hasNotificationsPlugin = plugins.some((plugin) =>
@@ -83,6 +93,7 @@ if (!hasGooglePlugin) {
 module.exports = {
   expo: {
     ...expo,
+    version,
     android: {
       ...expo.android,
       ...(hasAndroidGoogleServices
@@ -95,6 +106,15 @@ module.exports = {
         ? { googleServicesFile: googleServiceInfoFile }
         : {}),
     },
+    extra: {
+      ...expo.extra,
+      gitSha,
+    },
     plugins,
+    runtimeVersion: version,
+    updates: {
+      ...expo.updates,
+      ...(easProjectId ? { url: `https://u.expo.dev/${easProjectId}` } : {}),
+    },
   },
 };

@@ -12,6 +12,7 @@ import {
   MemoryWallProvider,
   useMemoryWallContext,
 } from "../src/state/MemoryWallProvider";
+import { useAppUpdatesService } from "../src/hooks/useAppUpdates";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -23,6 +24,8 @@ Notifications.setNotificationHandler({
 });
 
 const AppLayout = () => {
+  useAppUpdatesService();
+
   useEffect(() => {
     SystemUI.setBackgroundColorAsync("#f7efe7");
   }, []);
