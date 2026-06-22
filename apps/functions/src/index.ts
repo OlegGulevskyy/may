@@ -100,6 +100,12 @@ type GoogleDriveFile = {
   };
 };
 
+type OriginalMediaPlaybackSource = {
+  expiresInSeconds?: number;
+  headers: Record<string, string>;
+  uri: string;
+};
+
 type GoogleGmailMessage = {
   id?: string;
   threadId?: string;
@@ -1967,6 +1973,9 @@ const requestBearerToken = (authorization: unknown) => {
   return match?.[1]?.trim();
 };
 
+const wantsPlaybackSource = (value: unknown) =>
+  queryStringValue(value)?.toLowerCase() === "source";
+
 const copyDriveStreamHeaders = (
   source: Response,
   target: { set: (field: string, value: string) => void },
@@ -1983,6 +1992,39 @@ const copyDriveStreamHeaders = (
     }
   }
 };
+
+const maxMediaStreamChunkBytes = 2 * 1024 * 1024;
+
+const boundedRangeHeader = (range: unknown) => {
+  if (typeof range !== "string") {
+    return `bytes=0-${maxMediaStreamChunkBytes - 1}`;
+  }
+
+  const match = range.match(/^bytes=(\d+)-(\d*)$/);
+  if (!match) {
+    return range;
+  }
+
+  const start = Number(match[1]);
+  if (!Number.isSafeInteger(start) || start < 0) {
+    return range;
+  }
+
+  const requestedEnd =
+    match[2].length > 0 && Number.isSafeInteger(Number(match[2]))
+      ? Number(match[2])
+      : undefined;
+  const maxEnd = start + maxMediaStreamChunkBytes - 1;
+  const end =
+    requestedEnd === undefined ? maxEnd : Math.min(requestedEnd, maxEnd);
+
+  return `bytes=${start}-${end}`;
+};
+
+const driveMediaDownloadUri = (fileId: string) =>
+  `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+    fileId,
+  )}?alt=media`;
 
 export const streamOriginalMedia = onRequest(
   {
@@ -2060,17 +2102,30 @@ export const streamOriginalMedia = onRequest(
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
     };
-    const range = request.headers.range;
-    if (typeof range === "string") {
-      headers.Range = range;
+    const driveUri = driveMediaDownloadUri(originalStorage.fileId);
+
+    if (wantsPlaybackSource(request.query.mode)) {
+      const playbackSource: OriginalMediaPlaybackSource = {
+        expiresInSeconds: 3300,
+        headers,
+        uri: driveUri,
+      };
+      response.set("Cache-Control", "private, max-age=300");
+      response.json(playbackSource);
+      return;
     }
 
-    const driveResponse = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-        originalStorage.fileId,
-      )}?alt=media`,
-      { headers },
-    );
+    const mediaKind = optionalString(media.kind);
+    if (mediaKind === "video") {
+      headers.Range = boundedRangeHeader(request.headers.range);
+    } else {
+      const range = request.headers.range;
+      if (typeof range === "string") {
+        headers.Range = range;
+      }
+    }
+
+    const driveResponse = await fetch(driveUri, { headers });
 
     if (!driveResponse.ok) {
       const message = await driveResponse

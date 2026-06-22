@@ -7,6 +7,17 @@ import { getFirebaseServices } from "./firebase";
 
 const functionsRegion = "us-east1";
 
+type OriginalMediaPlaybackSource = {
+  expiresInSeconds?: number;
+  headers?: Record<string, string>;
+  uri: string;
+};
+
+const playbackSourceCache = new Map<
+  string,
+  { expiresAt: number; source: OriginalMediaPlaybackSource }
+>();
+
 export const originalMediaStreamUrl = ({
   familyId,
   mediaId,
@@ -33,9 +44,22 @@ export const originalMediaStreamUrl = ({
 export const isOriginalMediaStreamUrl = (uri: string) =>
   uri.includes(".cloudfunctions.net/streamOriginalMedia?");
 
-export const originalMediaStreamHeaders = async (uri: string) => {
+const playbackSourceRequestUrl = (uri: string) => {
+  const url = new URL(uri);
+  url.searchParams.set("mode", "source");
+  return url.toString();
+};
+
+const fetchOriginalMediaPlaybackSource = async (
+  uri: string,
+): Promise<OriginalMediaPlaybackSource> => {
   if (!isOriginalMediaStreamUrl(uri)) {
-    return undefined;
+    return { uri };
+  }
+
+  const cached = playbackSourceCache.get(uri);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.source;
   }
 
   const user = getFirebaseServices()?.auth.currentUser;
@@ -44,21 +68,52 @@ export const originalMediaStreamHeaders = async (uri: string) => {
   }
 
   const idToken = await user.getIdToken();
+  const response = await fetch(playbackSourceRequestUrl(uri), {
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Media source request failed with HTTP ${response.status}`);
+  }
+
+  const source = (await response.json()) as OriginalMediaPlaybackSource;
+  if (
+    typeof source.uri !== "string" ||
+    (source.headers !== undefined &&
+      (typeof source.headers !== "object" || source.headers === null))
+  ) {
+    throw new Error("Media source response was invalid.");
+  }
+
+  playbackSourceCache.set(uri, {
+    expiresAt:
+      Date.now() + Math.max(60, (source.expiresInSeconds ?? 3000) - 120) * 1000,
+    source,
+  });
+
+  return source;
+};
+
+export const resolveOriginalMediaDownload = async (uri: string) => {
+  const source = await fetchOriginalMediaPlaybackSource(uri);
   return {
-    Authorization: `Bearer ${idToken}`,
+    headers: source.headers,
+    uri: source.uri,
   };
 };
 
 export const resolvePlayableVideoSource = async (
   media: MemoryMedia,
 ): Promise<VideoSource> => {
-  const headers = await originalMediaStreamHeaders(media.uri);
-  if (!headers) {
+  const source = await fetchOriginalMediaPlaybackSource(media.uri);
+  if (!source.headers) {
     return media.uri;
   }
 
   return {
-    headers,
-    uri: media.uri,
+    headers: source.headers,
+    uri: source.uri,
   };
 };

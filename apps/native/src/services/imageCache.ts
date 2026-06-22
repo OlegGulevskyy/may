@@ -3,7 +3,7 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import type { MemoryMedia } from "@may/core";
 
-import { originalMediaStreamHeaders } from "./originalMediaPlayback";
+import { resolveOriginalMediaDownload } from "./originalMediaPlayback";
 
 type ImageCacheVariant = "avatar" | "original" | "thumbnail";
 
@@ -162,11 +162,11 @@ const cacheImageUri = ({
       await FileSystem.deleteAsync(fileUri, { idempotent: true });
     }
 
-    const headers = await originalMediaStreamHeaders(uri);
+    const download = await resolveOriginalMediaDownload(uri);
     const result = await FileSystem.downloadAsync(
-      uri,
+      download.uri,
       fileUri,
-      headers ? { headers } : undefined,
+      download.headers ? { headers: download.headers } : undefined,
     );
     if (result.status < 200 || result.status >= 300) {
       await FileSystem.deleteAsync(fileUri, { idempotent: true });
