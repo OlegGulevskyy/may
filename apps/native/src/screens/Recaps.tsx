@@ -6,6 +6,7 @@ import {
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,6 +16,7 @@ import {
   type ImageStyle,
 } from "react-native";
 import { useEventListener } from "expo";
+import Constants from "expo-constants";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -84,6 +86,13 @@ type RecapMediaGroup = {
   items: RecapMediaItem[];
 };
 
+type PendingRecapRequest = {
+  key: string;
+  label: string;
+  recapId?: string;
+  status: "queued" | "starting";
+};
+
 type ResolveRecapAuthor = (id: string) => {
   displayName: string;
   id: string;
@@ -91,6 +100,13 @@ type ResolveRecapAuthor = (id: string) => {
 };
 
 const uriScheme = (uri: string) => uri.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
+const showLocalRecapGenerator =
+  __DEV__ &&
+  Platform.OS === "ios" &&
+  (Constants.executionEnvironment !== "standalone" ||
+    [Constants.deviceName, Constants.platform?.ios?.model].some((value) =>
+      value?.toLowerCase().includes("simulator"),
+    ));
 
 export function RecapsPanel({
   childName,
@@ -104,9 +120,10 @@ export function RecapsPanel({
   resolveAuthor: ResolveRecapAuthor;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [pendingRequest, setPendingRequest] =
+    useState<PendingRecapRequest | null>(null);
   const [recaps, setRecaps] = useState<MemoryRecap[]>([]);
   const [requestingKey, setRequestingKey] = useState<string | null>(null);
-  const [selectedPeriodKey, setSelectedPeriodKey] = useState("week");
   const [selectedRecapId, setSelectedRecapId] = useState<string | null>(null);
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -147,9 +164,22 @@ export function RecapsPanel({
     }
   }, [initialRecapId]);
 
+  useEffect(() => {
+    if (
+      pendingRequest?.recapId &&
+      recaps.some((recap) => recap.id === pendingRequest.recapId)
+    ) {
+      setPendingRequest(null);
+    }
+  }, [pendingRequest, recaps]);
+
   const requestRecap = useCallback(
     async (option: RecapPeriodOption) => {
-      setSelectedPeriodKey(option.key);
+      setPendingRequest({
+        key: option.key,
+        label: option.label,
+        status: "starting",
+      });
       setRequestingKey(option.key);
       try {
         const result = await requestFamilyRecap({
@@ -159,10 +189,17 @@ export function RecapsPanel({
           periodEnd: option.periodEnd,
           timezone,
         });
+        setPendingRequest({
+          key: option.key,
+          label: option.label,
+          recapId: result.recapId,
+          status: "queued",
+        });
         if (result.status === "ready") {
           setSelectedRecapId(result.recapId);
         }
       } catch (requestError) {
+        setPendingRequest(null);
         Alert.alert("Could not start recap", getErrorMessage(requestError));
       } finally {
         setRequestingKey(null);
@@ -194,22 +231,30 @@ export function RecapsPanel({
         </Text>
       </View>
 
-      <View style={styles.periodGrid}>
-        {periodOptions.map((option) => (
-          <PeriodButton
-            active={selectedPeriodKey === option.key}
-            busy={requestingKey === option.key}
-            key={option.key}
-            onPress={() => requestRecap(option)}
-            option={option}
-          />
-        ))}
-      </View>
+      {showLocalRecapGenerator ? (
+        <View style={styles.recapGenerator}>
+          <Text style={styles.recapGeneratorTitle}>Generate a recap</Text>
+          <View style={styles.periodGrid}>
+            {periodOptions.map((option) => (
+              <PeriodButton
+                busy={requestingKey === option.key}
+                disabled={Boolean(requestingKey || pendingRequest)}
+                key={option.key}
+                onPress={() => requestRecap(option)}
+                option={option}
+              />
+            ))}
+          </View>
+          {pendingRequest ? (
+            <RecapRequestNotice pendingRequest={pendingRequest} />
+          ) : null}
+        </View>
+      ) : null}
 
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
       <View style={styles.recapList}>
-        {recaps.length === 0 ? (
+        {recaps.length === 0 && !pendingRequest ? (
           <EmptyRecaps />
         ) : (
           recaps.map((recap) => (
@@ -239,13 +284,13 @@ export function RecapsPanel({
 }
 
 function PeriodButton({
-  active,
   busy,
+  disabled,
   onPress,
   option,
 }: {
-  active: boolean;
   busy: boolean;
+  disabled: boolean;
   onPress: () => void;
   option: RecapPeriodOption;
 }) {
@@ -253,35 +298,48 @@ function PeriodButton({
     <Pressable
       accessibilityLabel={`Generate ${option.label.toLowerCase()} recap`}
       accessibilityRole="button"
-      disabled={busy}
+      disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
         styles.periodButton,
-        active ? styles.periodButtonActive : null,
-        pressed && !busy ? styles.pressed : null,
+        disabled && !busy ? styles.periodButtonDisabled : null,
+        pressed && !disabled ? styles.pressed : null,
       ]}
     >
       {busy ? (
-        <ActivityIndicator
-          color={active ? palette.porcelain : palette.berry}
-          size="small"
-        />
+        <ActivityIndicator color={palette.berry} size="small" />
       ) : (
-        <Sparkles
-          color={active ? palette.porcelain : palette.berry}
-          size={16}
-        />
+        <View style={styles.periodButtonIcon}>
+          <Sparkles color={palette.berry} size={16} />
+        </View>
       )}
-      <Text
-        numberOfLines={1}
-        style={[
-          styles.periodButtonText,
-          active ? styles.periodButtonTextActive : null,
-        ]}
-      >
-        {option.label}
+      <Text numberOfLines={1} style={styles.periodButtonText}>
+        Generate {option.label.toLowerCase()}
       </Text>
     </Pressable>
+  );
+}
+
+function RecapRequestNotice({
+  pendingRequest,
+}: {
+  pendingRequest: PendingRecapRequest;
+}) {
+  const message =
+    pendingRequest.status === "starting"
+      ? "Starting request..."
+      : "Request sent. Building recap...";
+
+  return (
+    <View style={styles.recapRequestNotice}>
+      <ActivityIndicator color={palette.berry} size="small" />
+      <View style={styles.recapRequestText}>
+        <Text style={styles.recapRequestTitle}>
+          {pendingRequest.label} recap
+        </Text>
+        <Text style={styles.recapRequestMessage}>{message}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -1452,38 +1510,81 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0,
   },
-  periodGrid: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  periodButton: {
-    alignItems: "center",
+  recapGenerator: {
     backgroundColor: "rgba(255,255,255,0.58)",
     borderColor: palette.rim,
     borderRadius: radius.medium,
     borderWidth: StyleSheet.hairlineWidth,
-    flex: 1,
-    flexDirection: "row",
-    gap: 6,
-    justifyContent: "center",
-    minHeight: 44,
-    minWidth: 0,
-    paddingHorizontal: 8,
-    ...shadow.soft,
+    gap: 10,
+    padding: 12,
   },
-  periodButtonActive: {
-    backgroundColor: palette.ink,
-    borderColor: "rgba(37,45,43,0.14)",
+  recapGeneratorTitle: {
+    color: palette.inkMuted,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: 0,
+    textTransform: "uppercase",
+  },
+  periodGrid: {
+    gap: 8,
+  },
+  periodButton: {
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.8)",
+    borderColor: palette.rim,
+    borderRadius: radius.medium,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 10,
+    minHeight: 48,
+    minWidth: 0,
+    paddingHorizontal: 12,
+  },
+  periodButtonDisabled: {
+    opacity: 0.52,
+  },
+  periodButtonIcon: {
+    alignItems: "center",
+    backgroundColor: "rgba(176,76,64,0.1)",
+    borderRadius: radius.pill,
+    height: 30,
+    justifyContent: "center",
+    width: 30,
   },
   periodButtonText: {
     color: palette.ink,
     flexShrink: 1,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "800",
     letterSpacing: 0,
   },
-  periodButtonTextActive: {
-    color: palette.porcelain,
+  recapRequestNotice: {
+    alignItems: "center",
+    backgroundColor: "rgba(176,76,64,0.08)",
+    borderColor: "rgba(176,76,64,0.16)",
+    borderRadius: radius.medium,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  recapRequestText: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  recapRequestTitle: {
+    color: palette.ink,
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: 0,
+  },
+  recapRequestMessage: {
+    color: palette.inkMuted,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0,
   },
   pressed: {
     opacity: 0.72,
